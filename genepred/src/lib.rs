@@ -367,11 +367,3 @@ pub mod reader;
 pub use bed::*;
 pub use genepred::GenePred;
 pub use reader::{Reader, ReaderBuilder, ReaderMode, ReaderResult};
-
-pub mod bed;
-pub mod genepred;
-pub mod reader;
-
-pub use bed::*;
-pub use genepred::GenePred;
-pub use reader::{Reader, ReaderBuilder, ReaderMode, ReaderResult};
