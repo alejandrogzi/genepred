@@ -4,7 +4,8 @@ use genepred::{Bed12, Bed3, Bed4, Bed6};
 #[test]
 fn test_reader_from_string_bed3() {
     let data = "chr1\t10\t20\nchr1\t30\t40";
-    let mut reader: Reader<Bed3> = Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
+    let mut reader: Reader<Bed3> =
+        Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
     assert_eq!(records.len(), 2);
 
@@ -22,7 +23,8 @@ fn test_reader_from_string_bed3() {
 #[test]
 fn test_reader_from_string_bed4() {
     let data = "chr1\t10\t20\tgeneA\nchr1\t30\t40\tgeneB";
-    let mut reader: Reader<Bed4> = Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
+    let mut reader: Reader<Bed4> =
+        Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
     assert_eq!(records.len(), 2);
 
@@ -42,7 +44,8 @@ fn test_reader_from_string_bed4() {
 #[test]
 fn test_reader_from_string_bed6() {
     let data = "chr1\t10\t20\tgeneA\t100\t+\nchr1\t30\t40\tgeneB\t200\t-";
-    let mut reader: Reader<Bed6> = Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
+    let mut reader: Reader<Bed6> =
+        Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
     assert_eq!(records.len(), 2);
 
@@ -66,7 +69,8 @@ fn test_reader_from_string_bed6() {
 #[test]
 fn test_reader_from_string_bed12() {
     let data = "chr1\t10\t100\tgeneA\t1000\t+\t10\t100\t255,0,0\t2\t10,20,\t0,30,\n";
-    let mut reader: Reader<Bed12> = Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
+    let mut reader: Reader<Bed12> =
+        Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
     assert_eq!(records.len(), 1);
 
@@ -88,7 +92,8 @@ fn test_reader_from_string_bed12() {
 #[test]
 fn test_reader_invalid_line() {
     let data = "chr1\t10\t20\nmalformed_line\nchr2\t50\t60";
-    let mut reader: Reader<Bed3> = Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
+    let mut reader: Reader<Bed3> =
+        Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
     let records: Vec<_> = reader.records().collect();
     assert_eq!(records.len(), 3);
 
@@ -100,7 +105,8 @@ fn test_reader_invalid_line() {
 #[test]
 fn test_reader_empty_input() {
     let data = "";
-    let mut reader: Reader<Bed3> = Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
+    let mut reader: Reader<Bed3> =
+        Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
     assert!(records.is_empty());
 }
