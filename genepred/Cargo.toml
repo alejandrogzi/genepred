@@ -1,6 +1,6 @@
 [package]
 name = "genepred"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 authors = ["alejandrogzi <alejandrxgzi@gmail.com>"]
 license = "MIT"
@@ -26,3 +26,15 @@ flate2 = { version = "1.0", default-features = false, features = ["rust_backend"
 [profile.release]
 lto = true
 opt-level = 3
+
+[[test]]
+name = "reader"
+path = "tests/reader.rs"
+test = true
+bench = false
+
+[[test]]
+name = "struct"
+path = "tests/struct.rs"
+test = true
+bench = false

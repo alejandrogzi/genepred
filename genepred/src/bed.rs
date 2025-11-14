@@ -63,6 +63,16 @@ impl Strand {
     }
 }
 
+impl fmt::Display for Strand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Strand::Forward => f.write_str("+"),
+            Strand::Reverse => f.write_str("-"),
+            Strand::Unknown => f.write_str("."),
+        }
+    }
+}
+
 /// Represents an RGB color triplet.
 ///
 /// This struct is used to store the color of a feature in a BED file,
@@ -80,6 +90,8 @@ impl Strand {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
+
+pub type ItemRgb = Rgb;
 
 impl Rgb {
     /// Parse a string into an `Rgb` color.
@@ -133,6 +145,12 @@ impl Rgb {
             ));
         }
         Ok(Rgb(r, g, b))
+    }
+}
+
+impl fmt::Display for ItemRgb {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{},{},{}", self.0, self.1, self.2)
     }
 }
 

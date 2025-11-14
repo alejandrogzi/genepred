@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, Rgb, Strand};
 
 /// Canonical representation of a BED record with up to 12 fields plus extras.
@@ -34,7 +36,7 @@ pub struct GenePred {
 }
 
 impl GenePred {
-    fn from_coords(chrom: String, start: u64, end: u64, extras: Vec<String>) -> Self {
+    pub fn from_coords(chrom: String, start: u64, end: u64, extras: Vec<String>) -> Self {
         Self {
             chrom,
             start,
@@ -365,6 +367,58 @@ impl GenePred {
     /// Returns the number of introns.
     pub fn intron_count(&self) -> usize {
         self.exon_count().saturating_sub(1)
+    }
+}
+
+impl fmt::Display for GenePred {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}\t{}\t{}", self.chrom, self.start, self.end)?;
+
+        if let Some(name) = &self.name {
+            write!(f, "\t{}", name)?;
+        }
+        if let Some(score) = self.score {
+            write!(f, "\t{}", score)?;
+        }
+        if let Some(strand) = self.strand {
+            write!(f, "\t{}", strand)?;
+        }
+        if let Some(thick_start) = self.thick_start {
+            write!(f, "\t{}", thick_start)?;
+        }
+        if let Some(thick_end) = self.thick_end {
+            write!(f, "\t{}", thick_end)?;
+        }
+        if let Some(item_rgb) = self.item_rgb {
+            write!(f, "\t{}", item_rgb)?;
+        }
+        if let Some(block_count) = self.block_count {
+            write!(f, "\t{}", block_count)?;
+        }
+        if let Some(block_sizes) = &self.block_sizes {
+            f.write_str("\t")?;
+            if let Some((first, rest)) = block_sizes.split_first() {
+                write!(f, "{}", first)?;
+                for size in rest {
+                    write!(f, ",{}", size)?;
+                }
+            }
+        }
+        if let Some(block_starts) = &self.block_starts {
+            f.write_str("\t")?;
+            if let Some((first, rest)) = block_starts.split_first() {
+                write!(f, "{}", first)?;
+                for start in rest {
+                    write!(f, ",{}", start)?;
+                }
+            }
+        }
+        for extra in &self.extras {
+            f.write_str("\t")?;
+            f.write_str(extra)?;
+        }
+
+        Ok(())
     }
 }
 
