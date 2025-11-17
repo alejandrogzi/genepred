@@ -10,12 +10,12 @@ fn test_reader_from_string_bed3() {
     assert_eq!(records.len(), 2);
 
     let first = &records[0];
-    assert_eq!(first.chrom(), "chr1");
+    assert_eq!(first.chrom(), b"chr1".as_ref());
     assert_eq!(first.start(), 10);
     assert_eq!(first.end(), 20);
 
     let second = &records[1];
-    assert_eq!(second.chrom(), "chr1");
+    assert_eq!(second.chrom(), b"chr1".as_ref());
     assert_eq!(second.start(), 30);
     assert_eq!(second.end(), 40);
 }
@@ -29,16 +29,16 @@ fn test_reader_from_string_bed4() {
     assert_eq!(records.len(), 2);
 
     let first = &records[0];
-    assert_eq!(first.chrom(), "chr1");
+    assert_eq!(first.chrom(), b"chr1".as_ref());
     assert_eq!(first.start(), 10);
     assert_eq!(first.end(), 20);
-    assert_eq!(first.name().unwrap(), "geneA");
+    assert_eq!(first.name().unwrap(), b"geneA".as_ref());
 
     let second = &records[1];
-    assert_eq!(second.chrom(), "chr1");
+    assert_eq!(second.chrom(), b"chr1".as_ref());
     assert_eq!(second.start(), 30);
     assert_eq!(second.end(), 40);
-    assert_eq!(second.name().unwrap(), "geneB");
+    assert_eq!(second.name().unwrap(), b"geneB".as_ref());
 }
 
 #[test]
@@ -50,18 +50,18 @@ fn test_reader_from_string_bed6() {
     assert_eq!(records.len(), 2);
 
     let first = &records[0];
-    assert_eq!(first.chrom(), "chr1");
+    assert_eq!(first.chrom(), b"chr1".as_ref());
     assert_eq!(first.start(), 10);
     assert_eq!(first.end(), 20);
-    assert_eq!(first.name().unwrap(), "geneA");
+    assert_eq!(first.name().unwrap(), b"geneA".as_ref());
     assert_eq!(first.score().unwrap(), 100 as u16);
     assert_eq!(first.strand().unwrap().to_string(), "+");
 
     let second = &records[1];
-    assert_eq!(second.chrom(), "chr1");
+    assert_eq!(second.chrom(), b"chr1".as_ref());
     assert_eq!(second.start(), 30);
     assert_eq!(second.end(), 40);
-    assert_eq!(second.name().unwrap(), "geneB");
+    assert_eq!(second.name().unwrap(), b"geneB".as_ref());
     assert_eq!(second.score().unwrap(), 200 as u16);
     assert_eq!(second.strand().unwrap().to_string(), "-");
 }
@@ -75,10 +75,10 @@ fn test_reader_from_string_bed12() {
     assert_eq!(records.len(), 1);
 
     let first = &records[0];
-    assert_eq!(first.chrom(), "chr1");
+    assert_eq!(first.chrom(), b"chr1".as_ref());
     assert_eq!(first.start(), 10);
     assert_eq!(first.end(), 100);
-    assert_eq!(first.name().unwrap(), "geneA");
+    assert_eq!(first.name().unwrap(), b"geneA".as_ref());
     assert_eq!(first.score().unwrap(), 1000 as u16);
     assert_eq!(first.strand().unwrap().to_string(), "+");
     assert_eq!(first.thick_start().unwrap(), 10);
