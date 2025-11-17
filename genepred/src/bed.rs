@@ -1,6 +1,7 @@
 use std::fmt;
 
 use crate::{
+    genepred::Extras,
     reader::{ReaderError, ReaderResult},
     strand::Strand,
 };
@@ -14,28 +15,28 @@ const THICK_START: &str = "thickStart";
 const THICK_END: &str = "thickEnd";
 const ITEM_RGB: &str = "itemRgb";
 
-/// Represents an RGB color triplet.
-///
-/// This struct is used to store the color of a feature in a BED file,
-/// typically from column 9 (`itemRgb`).
+/// Represents an RGB color triplet, typically from column 9 (`itemRgb`) of a BED file.
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore,ignore
+/// ```
 /// use genepred::bed::Rgb;
 ///
 /// let color = Rgb(255, 0, 0); // Red
 /// assert_eq!(color.0, 255);
 /// assert_eq!(color.1, 0);
-/// assert_eq!(color.2, 255);
+/// assert_eq!(color.2, 0);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
+/// A type alias for `Rgb` for clarity when used in BED records.
 pub type ItemRgb = Rgb;
 
 impl Rgb {
-    /// Parse a string into an `Rgb` color.
+    /// Parses a string into an `Rgb` color.
+    ///
+    /// The string should be a comma-separated list of three numbers between 0 and 255.
     ///
     /// # Errors
     ///
@@ -43,16 +44,16 @@ impl Rgb {
     ///
     /// # Example
     ///
-    /// ```rust,no_run,ignore
+    /// ```rust,ignore
     /// use genepred::bed::Rgb;
     ///
-    /// let color = Rgb::parse("255,0,0")?;
-    /// assert_eq!(color.0, 255);
-    /// assert_eq!(color.1, 0);
-    /// assert_eq!(color.2, 255);
-    /// Ok(())
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let color = Rgb::parse("255,0,0", 1)?;
+    ///     assert_eq!(color, Rgb(255, 0, 0));
+    ///     Ok(())
+    /// }
     /// ```
-    fn parse(raw: &str, line: usize) -> ReaderResult<Self> {
+    pub(crate) fn parse(raw: &str, line: usize) -> ReaderResult<Self> {
         let mut parts = raw.split(',');
         let mut next = |label: &str| -> ReaderResult<u8> {
             parts
@@ -102,22 +103,26 @@ impl fmt::Display for ItemRgb {
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
+/// ```
 /// use genepred::bed::{BedFormat, Bed3};
 /// use genepred::reader::{Reader, ReaderResult};
+/// use genepred::genepred::Extras;
 ///
-/// // A custom BED format with a single field.
+/// // A custom BED format with only the chromosome and score.
 /// #[derive(Debug, Clone, PartialEq, Eq)]
 /// struct MyBed {
 ///    chrom: Vec<u8>,
+///    score: u16,
 /// }
 ///
 /// impl BedFormat for MyBed {
-///     const FIELD_COUNT: usize = 1;
+///     const FIELD_COUNT: usize = 2;
+///     const SUPPORTS_STANDARD_READER: bool = false;
 ///
-///     fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+///     fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
 ///         Ok(Self {
 ///             chrom: fields[0].as_bytes().to_vec(),
+///             score: fields[1].parse().unwrap(),
 ///         })
 ///     }
 /// }
@@ -125,25 +130,28 @@ impl fmt::Display for ItemRgb {
 pub trait BedFormat: Sized + fmt::Debug + Send + Sync + 'static {
     /// The number of fields in the BED record.
     const FIELD_COUNT: usize;
+    /// Indicates whether the shared `Reader` implementation can parse this format
+    /// line-by-line using the standard BED parser.
+    const SUPPORTS_STANDARD_READER: bool = true;
 
     /// Creates a new record from a slice of fields.
     ///
     /// # Arguments
     ///
     /// * `fields` - A slice of strings representing the fields of the BED record.
-    /// * `extras` - A vector of byte buffers representing any extra fields beyond
-    ///   the standard BED fields.
+    /// * `extras` - A map of additional column identifiers to their raw byte values,
+    ///   representing any columns beyond the standard BED fields.
     /// * `line` - The line number of the record in the input file.
     ///
     /// # Returns
     ///
     /// A `ReaderResult` containing the new record, or a `ReaderError` if the
     /// record could not be parsed.
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self>;
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self>;
 }
 
-/// Parses a BED field to a u64
-fn __to_u64(field: &str, line: usize, label: &'static str) -> ReaderResult<u64> {
+/// Parses a BED field to a `u64`.
+pub(crate) fn __to_u64(field: &str, line: usize, label: &'static str) -> ReaderResult<u64> {
     field.parse::<u64>().map_err(|_| {
         ReaderError::invalid_field(
             line,
@@ -153,8 +161,8 @@ fn __to_u64(field: &str, line: usize, label: &'static str) -> ReaderResult<u64> 
     })
 }
 
-/// Parses a BED field to a u32
-fn __to_u32(field: &str, line: usize, label: &'static str) -> ReaderResult<u32> {
+/// Parses a BED field to a `u32`.
+pub(crate) fn __to_u32(field: &str, line: usize, label: &'static str) -> ReaderResult<u32> {
     field.parse::<u32>().map_err(|_| {
         ReaderError::invalid_field(
             line,
@@ -164,8 +172,10 @@ fn __to_u32(field: &str, line: usize, label: &'static str) -> ReaderResult<u32> 
     })
 }
 
-/// Parses a BED score field to a u16
-fn __parse_score(field: &str, line: usize) -> ReaderResult<u16> {
+/// Parses a BED score field to a `u16`.
+///
+/// The score must be between 0 and 1000.
+pub(crate) fn __parse_score(field: &str, line: usize) -> ReaderResult<u16> {
     let value = field.parse::<u16>().map_err(|_| {
         ReaderError::invalid_field(
             line,
@@ -184,8 +194,12 @@ fn __parse_score(field: &str, line: usize) -> ReaderResult<u16> {
     Ok(value)
 }
 
-/// Parses a BED block size list to a vector of u32
-fn __parse_sizes(list: &str, line: usize, label: &'static str) -> ReaderResult<Vec<u32>> {
+/// Parses a comma-separated list of `u32` values.
+pub(crate) fn __parse_sizes(
+    list: &str,
+    line: usize,
+    label: &'static str,
+) -> ReaderResult<Vec<u32>> {
     list.split(',')
         .filter(|s| !s.is_empty())
         .map(|item| {
@@ -204,38 +218,44 @@ fn __parse_sizes(list: &str, line: usize, label: &'static str) -> ReaderResult<V
 
 /// A BED3 record, containing the essential fields for a genomic region.
 ///
+/// The `chrom`, `start`, and `end` fields are the only required fields in a BED file.
+///
+/// The `extras` field is a vector of strings that contains any extra fields that
+/// are not part of the standard BED3 format.
+///
 /// # Example
 ///
-/// ```rust,no_run,ignore
+/// ```
 /// use genepred::bed::Bed3;
+/// use genepred::genepred::Extras;
 ///
 /// let record = Bed3 {
-///     chrom: "chr1".to_string(),
+///     chrom: b"chr1".to_vec(),
 ///     start: 100,
 ///     end: 200,
-///     extras: vec![],
+///     extras: Extras::new(),
 /// };
 ///
-/// assert_eq!(record.chrom, "chr1");
+/// assert_eq!(record.chrom, b"chr1");
 /// assert_eq!(record.start, 100);
 /// assert_eq!(record.end, 200);
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed3 {
-    /// The chromosome or scaffold of the feature.
+    /// The chromosome or scaffold of the feature. Stored as a byte vector for efficiency.
     pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// Any extra fields beyond the standard BED3 fields.
-    pub extras: Vec<Vec<u8>>,
+    pub extras: Extras,
 }
 
 impl BedFormat for Bed3 {
     const FIELD_COUNT: usize = 3;
 
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
         Ok(Self {
             chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
@@ -249,18 +269,19 @@ impl BedFormat for Bed3 {
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
+/// ```
 /// use genepred::bed::Bed4;
+/// use genepred::genepred::Extras;
 ///
 /// let record = Bed4 {
-///     chrom: "chr1".to_string(),
+///     chrom: b"chr1".to_vec(),
 ///     start: 100,
 ///     end: 200,
-///     name: "feature1".to_string(),
-///     extras: vec![],
+///     name: b"feature1".to_vec(),
+///     extras: Extras::new(),
 /// };
 ///
-/// assert_eq!(record.name, "feature1");
+/// assert_eq!(record.name, b"feature1");
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed4 {
@@ -273,13 +294,13 @@ pub struct Bed4 {
     /// The name of the feature.
     pub name: Vec<u8>,
     /// Any extra fields beyond the standard BED4 fields.
-    pub extras: Vec<Vec<u8>>,
+    pub extras: Extras,
 }
 
 impl BedFormat for Bed4 {
     const FIELD_COUNT: usize = 4;
 
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
         Ok(Self {
             chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
@@ -294,16 +315,17 @@ impl BedFormat for Bed4 {
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
+/// ```
 /// use genepred::bed::Bed5;
+/// use genepred::genepred::Extras;
 ///
 /// let record = Bed5 {
-///     chrom: "chr1".to_string(),
+///     chrom: b"chr1".to_vec(),
 ///     start: 100,
 ///     end: 200,
-///     name: "feature1".to_string(),
+///     name: b"feature1".to_vec(),
 ///     score: 500,
-///     extras: vec![],
+///     extras: Extras::new(),
 /// };
 ///
 /// assert_eq!(record.score, 500);
@@ -321,13 +343,13 @@ pub struct Bed5 {
     /// A score between 0 and 1000.
     pub score: u16,
     /// Any extra fields beyond the standard BED5 fields.
-    pub extras: Vec<Vec<u8>>,
+    pub extras: Extras,
 }
 
 impl BedFormat for Bed5 {
     const FIELD_COUNT: usize = 5;
 
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
         Ok(Self {
             chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
@@ -343,17 +365,19 @@ impl BedFormat for Bed5 {
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
-/// use genepred::bed::{Bed6, Strand};
+/// ```
+/// use genepred::bed::Bed6;
+/// use genepred::genepred::Extras;
+/// use genepred::strand::Strand;
 ///
 /// let record = Bed6 {
-///     chrom: "chr1".to_string(),
+///     chrom: b"chr1".to_vec(),
 ///     start: 100,
 ///     end: 200,
-///     name: "feature1".to_string(),
+///     name: b"feature1".to_vec(),
 ///     score: 500,
 ///     strand: Strand::Forward,
-///     extras: vec![],
+///     extras: Extras::new(),
 /// };
 ///
 /// assert_eq!(record.strand, Strand::Forward);
@@ -373,13 +397,13 @@ pub struct Bed6 {
     /// The strand of the feature.
     pub strand: Strand,
     /// Any extra fields beyond the standard BED6 fields.
-    pub extras: Vec<Vec<u8>>,
+    pub extras: Extras,
 }
 
 impl BedFormat for Bed6 {
     const FIELD_COUNT: usize = 6;
 
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
         Ok(Self {
             chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
@@ -397,19 +421,23 @@ impl BedFormat for Bed6 {
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
-/// use genepred::bed::{Bed8, Strand};
+/// ```
+/// use genepred::bed::Bed8;
+/// use genepred::genepred::Extras;
+/// use genepred::strand::Strand;
+///
+/// use crate::genepred::BedFormat;
 ///
 /// let record = Bed8 {
-///     chrom: "chr1".to_string(),
+///     chrom: b"chr1".to_vec(),
 ///     start: 100,
 ///     end: 200,
-///     name: "feature1".to_string(),
+///     name: b"feature1".to_vec(),
 ///     score: 500,
 ///     strand: Strand::Forward,
 ///     thick_start: 120,
 ///     thick_end: 180,
-///     extras: vec![],
+///     extras: Extras::new(),
 /// };
 ///
 /// assert_eq!(record.thick_start, 120);
@@ -434,13 +462,13 @@ pub struct Bed8 {
     /// The ending position of the thick region.
     pub thick_end: u64,
     /// Any extra fields beyond the standard BED8 fields.
-    pub extras: Vec<Vec<u8>>,
+    pub extras: Extras,
 }
 
 impl BedFormat for Bed8 {
     const FIELD_COUNT: usize = 8;
 
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
         Ok(Self {
             chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
@@ -459,20 +487,24 @@ impl BedFormat for Bed8 {
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
-/// use genepred::bed::{Bed9, Rgb, Strand};
+/// ```
+/// use genepred::bed::{Bed9, Rgb};
+/// use genepred::genepred::Extras;
+/// use genepred::strand::Strand;
+///
+/// use crate::genepred::BedFormat;
 ///
 /// let record = Bed9 {
-///     chrom: "chr1".to_string(),
+///     chrom: b"chr1".to_vec(),
 ///     start: 100,
 ///     end: 200,
-///     name: "feature1".to_string(),
+///     name: b"feature1".to_vec(),
 ///     score: 500,
 ///     strand: Strand::Forward,
 ///     thick_start: 120,
 ///     thick_end: 180,
 ///     item_rgb: Rgb(255, 0, 0),
-///     extras: vec![],
+///     extras: Extras::new(),
 /// };
 ///
 /// assert_eq!(record.item_rgb, Rgb(255, 0, 0));
@@ -483,7 +515,7 @@ pub struct Bed9 {
     pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
-    /// The 1-based ending position of the feature.
+    /// The 1-based ending position of the feature..
     pub end: u64,
     /// The name of the feature.
     pub name: Vec<u8>,
@@ -498,7 +530,7 @@ pub struct Bed9 {
     /// The RGB color of the feature.
     pub item_rgb: Rgb,
     /// Any extra fields beyond the standard BED9 fields.
-    pub extras: Vec<Vec<u8>>,
+    pub extras: Extras,
 }
 
 impl BedFormat for Bed9 {
@@ -520,32 +552,40 @@ impl BedFormat for Bed9 {
     ///
     /// # Example
     ///
-    /// ```rust,no_run,ignore
-    /// use genepred::bed::{Bed9, Rgb, Strand};
+    /// ```
+    /// use genepred::bed::{Bed9, Rgb};
+    /// use genepred::genepred::Extras;
+    /// use genepred::strand::Strand;
     ///
-    /// let fields = vec![
-    ///     "chr1".to_string(),
-    ///     "100".to_string(),
-    ///     "200".to_string(),
-    ///     "feature1".to_string(),
-    ///     "500".to_string(),
-    ///     "+".to_string(),
-    ///     "120".to_string(),
-    ///     "180".to_string(),
-    ///     "255,0,0".to_string(),
+    /// use crate::genepred::BedFormat;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let fields = &[
+    ///     "chr1",
+    ///     "100",
+    ///     "200",
+    ///     "feature1",
+    ///     "500",
+    ///     "+",
+    ///     "120",
+    ///     "180",
+    ///     "255,0,0",
     /// ];
     ///
-    /// let record = Bed9::from_fields(&fields, Vec::new(), 0).unwrap();
-    /// assert_eq!(record.chrom, "chr1");
+    /// let record = Bed9::from_fields(fields, Extras::new(), 1)?;
+    /// assert_eq!(record.chrom, b"chr1");
     /// assert_eq!(record.start, 100);
     /// assert_eq!(record.end, 200);
-    /// assert_eq!(record.name, "feature1");
+    /// assert_eq!(record.name, b"feature1");
     /// assert_eq!(record.score, 500);
     /// assert_eq!(record.strand, Strand::Forward);
     /// assert_eq!(record.thick_start, 120);
     /// assert_eq!(record.thick_end, 180);
+    /// assert_eq!(record.item_rgb, Rgb(255, 0, 0));
+    /// # Ok(())
+    /// # }
     /// ```
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
         Ok(Self {
             chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
@@ -567,14 +607,18 @@ impl BedFormat for Bed9 {
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
-/// use genepred::bed::{Bed12, Rgb, Strand};
+/// ```
+/// use genepred::bed::{Bed12, Rgb};
+/// use genepred::genepred::Extras;
+/// use genepred::strand::Strand;
+///
+/// use crate::genepred::BedFormat;
 ///
 /// let record = Bed12 {
-///     chrom: "chr1".to_string(),
+///     chrom: b"chr1".to_vec(),
 ///     start: 100,
 ///     end: 200,
-///     name: "feature1".to_string(),
+///     name: b"feature1".to_vec(),
 ///     score: 500,
 ///     strand: Strand::Forward,
 ///     thick_start: 120,
@@ -583,7 +627,7 @@ impl BedFormat for Bed9 {
 ///     block_count: 2,
 ///     block_sizes: vec![10, 20],
 ///     block_starts: vec![0, 30],
-///     extras: vec![],
+///     extras: Extras::new(),
 /// };
 ///
 /// assert_eq!(record.block_count, 2);
@@ -617,7 +661,7 @@ pub struct Bed12 {
     /// A comma-separated list of block starts, relative to `start`.
     pub block_starts: Vec<u32>,
     /// Any extra fields beyond the standard BED12 fields.
-    pub extras: Vec<Vec<u8>>,
+    pub extras: Extras,
 }
 
 impl BedFormat for Bed12 {
@@ -639,35 +683,46 @@ impl BedFormat for Bed12 {
     ///
     /// # Example
     ///
-    /// ```rust,no_run,ignore
-    /// use genepred::bed::{Bed12, Rgb, Strand};
+    /// ```
+    /// use genepred::bed::{Bed12, Rgb};
+    /// use genepred::genepred::Extras;
+    /// use genepred::strand::Strand;
     ///
-    /// let fields = vec![
-    ///     "chr1".to_string(),
-    ///     "100".to_string(),
-    ///     "200".to_string(),
-    ///     "feature1".to_string(),
-    ///     "500".to_string(),
-    ///     "+".to_string(),
-    ///     "120".to_string(),
-    ///     "180".to_string(),
-    ///     "255,0,0".to_string(),
-    ///     "2".to_string(),
-    ///     "10,20".to_string(),
-    ///     "0,30".to_string(),
+    /// use crate::genepred::BedFormat;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let fields = &[
+    ///     "chr1",
+    ///     "100",
+    ///     "200",
+    ///     "feature1",
+    ///     "500",
+    ///     "+",
+    ///     "120",
+    ///     "180",
+    ///     "255,0,0",
+    ///     "2",
+    ///     "10,20",
+    ///     "0,30",
     /// ];
     ///
-    /// let record = Bed12::from_fields(&fields, Vec::new(), 0).unwrap();
-    /// assert_eq!(record.chrom, "chr1");
+    /// let record = Bed12::from_fields(fields, Extras::new(), 1)?;
+    /// assert_eq!(record.chrom, b"chr1");
     /// assert_eq!(record.start, 100);
     /// assert_eq!(record.end, 200);
-    /// assert_eq!(record.name, "feature1");
+    /// assert_eq!(record.name, b"feature1");
     /// assert_eq!(record.score, 500);
     /// assert_eq!(record.strand, Strand::Forward);
     /// assert_eq!(record.thick_start, 120);
-    /// assert_eq!(record.thick_end
+    /// assert_eq!(record.thick_end, 180);
+    /// assert_eq!(record.item_rgb, Rgb(255, 0, 0));
+    /// assert_eq!(record.block_count, 2);
+    /// assert_eq!(record.block_sizes, vec![10, 20]);
+    /// assert_eq!(record.block_starts, vec![0, 30]);
+    /// # Ok(())
+    /// # }
     /// ```
-    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Extras, line: usize) -> ReaderResult<Self> {
         let block_count = __to_u32(fields[9], line, BLOCK_COUNT)?;
         let block_sizes = __parse_sizes(fields[10], line, BLOCK_SIZES)?;
         let block_starts = __parse_sizes(fields[11], line, BLOCK_STARTS)?;
@@ -694,7 +749,7 @@ impl BedFormat for Bed12 {
             ));
         }
 
-        if block_starts.is_empty() || block_sizes.is_empty() {
+        if block_count > 0 && (block_starts.is_empty() || block_sizes.is_empty()) {
             return Err(ReaderError::invalid_field(
                 line,
                 BLOCK_STARTS,
