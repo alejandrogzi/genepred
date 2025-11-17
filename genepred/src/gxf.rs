@@ -384,7 +384,7 @@ impl TranscriptBuilder {
             .transcript_extent
             .unwrap_or((self.observed_start, self.observed_end));
         let mut gene = GenePred::from_coords(self.chrom, span_start, span_end, self.extras);
-        gene.set_name(self.name.or_else(|| Some(parent_name)));
+        gene.set_name(self.name.or(Some(parent_name)));
         gene.set_strand(Some(self.strand));
 
         if self.exons.is_empty() {
@@ -446,7 +446,7 @@ fn eq_ignore_ascii(lhs: &[u8], rhs: &[u8]) -> bool {
         && lhs
             .iter()
             .zip(rhs.iter())
-            .all(|(a, b)| a.to_ascii_lowercase() == b.to_ascii_lowercase())
+            .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 /// Fast attribute parser that extracts key/value pairs into an `Extras` map.
@@ -523,7 +523,7 @@ pub fn parse_attributes(line: &[u8], sep: u8) -> Result<Extras, ParseError> {
                         value_end -= 1;
                     }
                     value = line[pos..value_end].to_vec();
-                    pos = pos + semi;
+                    pos += semi;
                 }
                 None => {
                     value = line[pos..trimmed_len].to_vec();
