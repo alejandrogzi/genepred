@@ -1,3 +1,4 @@
+use std::collections::{hash_map::Entry, HashMap};
 use std::fmt;
 
 use crate::{
@@ -34,12 +35,170 @@ pub struct GenePred {
     pub block_sizes: Option<Vec<u32>>,
     /// Optional block starts (relative to start).
     pub block_starts: Option<Vec<u32>>,
-    /// Additional trailing fields.
-    pub extras: Vec<Vec<u8>>,
+    /// Additional trailing fields grouped by key.
+    pub extras: Extras,
+}
+
+/// Represents additional key/value information associated with a `GenePred`.
+///
+/// Each key stores either a single scalar value or multiple ordered values
+/// without additional allocation for the common scalar case.
+pub type Extras = HashMap<Vec<u8>, ExtraValue>;
+
+/// Stores either a single byte value or an ordered collection of values.
+///
+/// This enum is used to store the values of extra fields in a `GenePred` record.
+/// It avoids allocation for the common case where an extra field has a single value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtraValue {
+    Scalar(Vec<u8>),
+    Array(Vec<Vec<u8>>),
+}
+
+impl ExtraValue {
+    /// Returns the first stored value, regardless of representation.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let scalar = ExtraValue::Scalar(b"value1".to_vec());
+    /// assert_eq!(scalar.first(), Some(&b"value1"[..]));
+    ///
+    /// let array = ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]);
+    /// assert_eq!(array.first(), Some(&b"value1"[..]));
+    /// ```
+    pub fn first(&self) -> Option<&[u8]> {
+        match self {
+            ExtraValue::Scalar(value) => Some(value),
+            ExtraValue::Array(values) => values.first().map(|v| v.as_slice()),
+        }
+    }
+
+    /// Pushes a new value onto this entry, upgrading to an array if necessary.
+    ///
+    /// If the `ExtraValue` is a `Scalar` and the new value is different, it will
+    /// be converted to an `Array`. If the value already exists, it will not be
+    /// added again.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let mut extra = ExtraValue::Scalar(b"value1".to_vec());
+    /// extra.push(b"value2".to_vec());
+    ///
+    /// assert_eq!(extra, ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]));
+    /// ```
+    pub fn push(&mut self, value: Vec<u8>) {
+        match self {
+            ExtraValue::Scalar(existing) => {
+                if *existing == value {
+                    return;
+                }
+                let old = std::mem::take(existing);
+                *self = ExtraValue::Array(vec![old, value]);
+            }
+            ExtraValue::Array(values) => {
+                if !values.iter().any(|current| current == &value) {
+                    values.push(value);
+                }
+            }
+        }
+    }
+
+    /// Returns an iterator over the stored values as byte slices.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let scalar = ExtraValue::Scalar(b"value1".to_vec());
+    /// let mut iter = scalar.iter();
+    /// assert_eq!(iter.next(), Some(&b"value1"[..]));
+    /// assert_eq!(iter.next(), None);
+    ///
+    /// let array = ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]);
+    /// let mut iter = array.iter();
+    /// assert_eq!(iter.next(), Some(&b"value1"[..]));
+    /// assert_eq!(iter.next(), Some(&b"value2"[..]));
+    /// assert_eq!(iter.next(), None);
+    /// ```
+    pub fn iter(&self) -> ExtraValueIter<'_> {
+        match self {
+            ExtraValue::Scalar(value) => ExtraValueIter::Scalar(Some(value)),
+            ExtraValue::Array(values) => ExtraValueIter::Array(values.iter()),
+        }
+    }
+}
+
+/// Convert a byte buffer into an [`ExtraValue`].
+impl From<Vec<u8>> for ExtraValue {
+    fn from(value: Vec<u8>) -> Self {
+        Self::Scalar(value)
+    }
+}
+
+/// Convert a string into an [`ExtraValue`].
+impl From<&str> for ExtraValue {
+    fn from(value: &str) -> Self {
+        Self::Scalar(value.as_bytes().to_vec())
+    }
+}
+
+/// Display an [`ExtraValue`] as a string.
+impl fmt::Display for ExtraValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ExtraValue::Scalar(value) => write!(f, "{}", String::from_utf8_lossy(value)),
+            ExtraValue::Array(values) => {
+                if let Some((first, rest)) = values.split_first() {
+                    write!(f, "{}", String::from_utf8_lossy(first))?;
+                    for value in rest {
+                        write!(f, ",{}", String::from_utf8_lossy(value))?;
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Iterator over the values stored within an [`ExtraValue`].
+pub enum ExtraValueIter<'a> {
+    Scalar(Option<&'a [u8]>),
+    Array(std::slice::Iter<'a, Vec<u8>>),
+}
+
+impl<'a> Iterator for ExtraValueIter<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            ExtraValueIter::Scalar(slot) => slot.take(),
+            ExtraValueIter::Array(iter) => iter.next().map(|value| value.as_slice()),
+        }
+    }
 }
 
 impl GenePred {
-    pub fn from_coords(chrom: Vec<u8>, start: u64, end: u64, extras: Vec<Vec<u8>>) -> Self {
+    /// Creates a new `GenePred` record from a chromosome, start, and end position.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::{GenePred, Extras};
+    ///
+    /// let gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
+    ///
+    /// assert_eq!(gene.chrom(), b"chr1");
+    /// assert_eq!(gene.start(), 100);
+    /// assert_eq!(gene.end(), 200);
+    /// ```
+    pub fn from_coords(chrom: Vec<u8>, start: u64, end: u64, extras: Extras) -> Self {
         Self {
             chrom,
             start,
@@ -129,10 +288,16 @@ impl GenePred {
         self.block_starts.as_deref()
     }
 
-    /// Returns a reference to the extra fields as byte buffers.
+    /// Returns a reference to all extra key/value pairs.
     #[inline]
-    pub fn extras(&self) -> &[Vec<u8>] {
+    pub fn extras(&self) -> &Extras {
         &self.extras
+    }
+
+    /// Returns a mutable reference to all extra key/value pairs.
+    #[inline]
+    pub fn extras_mut(&mut self) -> &mut Extras {
+        &mut self.extras
     }
 
     /// Returns the length of the feature (end - start).
@@ -207,14 +372,25 @@ impl GenePred {
         self.block_starts = block_starts;
     }
 
-    /// Sets the extra fields as owned byte buffers.
-    pub fn set_extras(&mut self, extras: Vec<Vec<u8>>) {
+    /// Sets the entire extras map.
+    pub fn set_extras(&mut self, extras: Extras) {
         self.extras = extras;
     }
 
-    /// Adds an extra field as raw bytes.
-    pub fn add_extra(&mut self, extra: Vec<u8>) {
-        self.extras.push(extra);
+    /// Adds an extra value to the provided key.
+    pub fn add_extra<K, V>(&mut self, key: K, value: V)
+    where
+        K: Into<Vec<u8>>,
+        V: Into<Vec<u8>>,
+    {
+        match self.extras.entry(key.into()) {
+            Entry::Vacant(slot) => {
+                slot.insert(ExtraValue::Scalar(value.into()));
+            }
+            Entry::Occupied(mut slot) => {
+                slot.get_mut().push(value.into());
+            }
+        }
     }
 
     /// Clears all extra fields.
@@ -229,6 +405,19 @@ impl GenePred {
     ///
     /// # Returns
     /// A vector of (start, end) tuples representing exonic regions in genomic coordinates.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::{GenePred, Extras};
+    ///
+    /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
+    /// gene.set_block_count(Some(2));
+    /// gene.set_block_sizes(Some(vec![10, 20]));
+    /// gene.set_block_starts(Some(vec![0, 30]));
+    ///
+    /// assert_eq!(gene.exons(), vec![(100, 110), (130, 150)]);
+    /// ```
     pub fn exons(&self) -> Vec<(u64, u64)> {
         match (&self.block_count, &self.block_sizes, &self.block_starts) {
             (Some(count), Some(sizes), Some(starts)) if *count > 0 => {
@@ -254,6 +443,19 @@ impl GenePred {
     ///
     /// # Returns
     /// A vector of (start, end) tuples representing intronic regions in genomic coordinates.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::{GenePred, Extras};
+    ///
+    /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
+    /// gene.set_block_count(Some(2));
+    /// gene.set_block_sizes(Some(vec![10, 20]));
+    /// gene.set_block_starts(Some(vec![0, 30]));
+    ///
+    /// assert_eq!(gene.introns(), vec![(110, 130)]);
+    /// ```
     pub fn introns(&self) -> Vec<(u64, u64)> {
         let exons = self.exons();
 
@@ -295,6 +497,21 @@ impl GenePred {
     ///
     /// If thick_start and thick_end are defined, returns only the portions of exons
     /// that overlap with the coding region.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::{GenePred, Extras};
+    ///
+    /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
+    /// gene.set_block_count(Some(2));
+    /// gene.set_block_sizes(Some(vec![10, 20]));
+    /// gene.set_block_starts(Some(vec![0, 30]));
+    /// gene.set_thick_start(Some(105));
+    /// gene.set_thick_end(Some(140));
+    ///
+    /// assert_eq!(gene.coding_exons(), vec![(105, 110), (130, 140)]);
+    /// ```
     pub fn coding_exons(&self) -> Vec<(u64, u64)> {
         match (self.thick_start, self.thick_end) {
             (Some(thick_start), Some(thick_end)) if thick_start < thick_end => self
@@ -333,21 +550,37 @@ impl GenePred {
     ///
     /// # Returns
     /// A flattened vector of all split values from all extra fields (each as a byte buffer).
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::{GenePred, Extras};
+    ///
+    /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
+    /// gene.add_extra("tags", "tag1,tag2");
+    ///
+    /// assert_eq!(gene.unnest_extras(","), vec![b"tag1".to_vec(), b"tag2".to_vec()]);
+    /// ```
     pub fn unnest_extras(&self, delimiter: &str) -> Vec<Vec<u8>> {
-        if delimiter.is_empty() {
-            return self.extras.clone();
-        }
+        let mut flattened = Vec::new();
+        for value in self.extras.values() {
+            for field in value.iter() {
+                if delimiter.is_empty() {
+                    flattened.push(field.to_vec());
+                    continue;
+                }
 
-        self.extras
-            .iter()
-            .flat_map(|extra| match std::str::from_utf8(extra) {
-                Ok(text) => text
-                    .split(delimiter)
-                    .map(|part| part.as_bytes().to_vec())
-                    .collect::<Vec<_>>(),
-                Err(_) => vec![extra.clone()],
-            })
-            .collect()
+                match std::str::from_utf8(field) {
+                    Ok(text) => {
+                        for segment in text.split(delimiter).filter(|segment| !segment.is_empty()) {
+                            flattened.push(segment.as_bytes().to_vec());
+                        }
+                    }
+                    Err(_) => flattened.push(field.to_vec()),
+                }
+            }
+        }
+        flattened
     }
 
     /// Checks if the feature overlaps with a given interval.
@@ -358,12 +591,37 @@ impl GenePred {
     ///
     /// # Returns
     /// `true` if there is any overlap, `false` otherwise.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::{GenePred, Extras};
+    ///
+    /// let gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
+    ///
+    /// assert!(gene.overlaps(150, 250));
+    /// assert!(!gene.overlaps(300, 400));
+    /// ```
     #[inline]
     pub fn overlaps(&self, query_start: u64, query_end: u64) -> bool {
         self.start < query_end && self.end > query_start
     }
 
     /// Checks if any exon overlaps with a given interval.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::{GenePred, Extras};
+    ///
+    /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
+    /// gene.set_block_count(Some(2));
+    /// gene.set_block_sizes(Some(vec![10, 20]));
+    /// gene.set_block_starts(Some(vec![0, 80]));
+    ///
+    /// assert!(gene.exon_overlaps(105, 115));
+    /// assert!(!gene.exon_overlaps(120, 130));
+    /// ```
     pub fn exon_overlaps(&self, query_start: u64, query_end: u64) -> bool {
         self.exons()
             .iter()
@@ -430,21 +688,44 @@ impl fmt::Display for GenePred {
                 }
             }
         }
-        for extra in &self.extras {
-            f.write_str("\t")?;
-            f.write_str(&String::from_utf8_lossy(extra))?;
+        if !self.extras.is_empty() {
+            let mut keys: Vec<&Vec<u8>> = self.extras.keys().collect();
+            keys.sort();
+            for key in keys {
+                if let Some(extra) = self.extras.get(key) {
+                    f.write_str("\t")?;
+                    f.write_str(&String::from_utf8_lossy(key))?;
+                    f.write_str("=")?;
+                    match extra {
+                        ExtraValue::Scalar(value) => {
+                            f.write_str(&String::from_utf8_lossy(value))?;
+                        }
+                        ExtraValue::Array(values) => {
+                            if let Some((first, rest)) = values.split_first() {
+                                f.write_str(&String::from_utf8_lossy(first))?;
+                                for value in rest {
+                                    f.write_str(",")?;
+                                    f.write_str(&String::from_utf8_lossy(value))?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         Ok(())
     }
 }
 
+/// Converts a `Bed3` record to a `GenePred` record.
 impl From<Bed3> for GenePred {
     fn from(record: Bed3) -> Self {
         GenePred::from_coords(record.chrom, record.start, record.end, record.extras)
     }
 }
 
+/// Converts a `Bed4` record to a `GenePred` record.
 impl From<Bed4> for GenePred {
     fn from(record: Bed4) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
@@ -453,6 +734,7 @@ impl From<Bed4> for GenePred {
     }
 }
 
+/// Converts a `Bed5` record to a `GenePred` record.
 impl From<Bed5> for GenePred {
     fn from(record: Bed5) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
@@ -462,6 +744,7 @@ impl From<Bed5> for GenePred {
     }
 }
 
+/// Converts a `Bed6` record to a `GenePred` record.
 impl From<Bed6> for GenePred {
     fn from(record: Bed6) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
@@ -472,6 +755,7 @@ impl From<Bed6> for GenePred {
     }
 }
 
+/// Converts a `Bed8` record to a `GenePred` record.
 impl From<Bed8> for GenePred {
     fn from(record: Bed8) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
@@ -484,6 +768,7 @@ impl From<Bed8> for GenePred {
     }
 }
 
+/// Converts a `Bed9` record to a `GenePred` record.
 impl From<Bed9> for GenePred {
     fn from(record: Bed9) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
@@ -497,6 +782,7 @@ impl From<Bed9> for GenePred {
     }
 }
 
+/// Converts a `Bed12` record to a `GenePred` record.
 impl From<Bed12> for GenePred {
     fn from(record: Bed12) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
