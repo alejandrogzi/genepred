@@ -1,3 +1,5 @@
+#[cfg(feature = "mmap")]
+use std::io::Cursor;
 use std::{
     borrow::Cow,
     collections::{hash_map::Entry, HashMap},
@@ -10,6 +12,8 @@ use std::{
 #[cfg(feature = "compression")]
 use flate2::read::MultiGzDecoder;
 use memchr::memchr;
+#[cfg(feature = "mmap")]
+use memmap2::MmapOptions;
 
 use crate::{
     bed::BedFormat,
@@ -27,6 +31,10 @@ pub struct Gtf;
 pub struct Gff;
 
 /// Describes parsing behaviour for a GXF-like format.
+///
+/// This trait is implemented by the built-in GXF format types (`Gtf`, `Gff`)
+/// and can be used to define custom GXF formats with different attribute
+/// separators or parent attributes.
 pub trait GxfFormat {
     /// Separator used between keys and values within the attribute column.
     const ATTR_SEPARATOR: u8;
@@ -49,6 +57,15 @@ impl GxfFormat for Gff {
 }
 
 /// Configuration options for parsing GXF records into `GenePred`s.
+///
+/// # Example
+///
+/// ```
+/// use genepred::gxf::GxfOptions;
+///
+/// let options = GxfOptions::new()
+///     .parent_attribute(b"Parent");
+/// ```
 #[derive(Clone, Debug, Default)]
 pub struct GxfOptions<'a> {
     parent_attribute: Option<Cow<'a, [u8]>>,
@@ -81,6 +98,20 @@ impl<'a> GxfOptions<'a> {
 }
 
 /// Reads a GXF (GTF/GFF) file and produces fully aggregated `GenePred` records.
+///
+/// This function reads a GXF file from the given path, parses it, and aggregates
+/// the records into a `Vec<GenePred>`. It handles both plain and gzip-compressed
+/// files (if the `compression` feature is enabled).
+///
+/// # Arguments
+///
+/// * `path` - The path to the GXF file.
+/// * `options` - Configuration options for parsing the file.
+///
+/// # Returns
+///
+/// A `ReaderResult` containing a `Vec<GenePred>` of the parsed records, or a
+/// `ReaderError` if the file could not be read or parsed.
 pub(crate) fn read_gxf_file<F, P>(path: P, options: &GxfOptions<'_>) -> ReaderResult<Vec<GenePred>>
 where
     F: GxfFormat,
@@ -91,6 +122,26 @@ where
     parse_gxf_stream::<F, _>(reader, options)
 }
 
+#[cfg(feature = "mmap")]
+pub(crate) fn read_gxf_mmap<F, P>(path: P, options: &GxfOptions<'_>) -> ReaderResult<Vec<GenePred>>
+where
+    F: GxfFormat,
+    P: AsRef<Path>,
+{
+    let file = File::open(path.as_ref())?;
+    let map = unsafe { MmapOptions::new().map(&file) }.map_err(ReaderError::Mmap)?;
+    let cursor = Cursor::new(&map[..]);
+    let reader = BufReader::with_capacity(128 * 1024, cursor);
+    let result = parse_gxf_stream::<F, _>(reader, options);
+    drop(map);
+    result
+}
+
+/// Opens a file and returns a boxed reader.
+///
+/// This function opens a file from the given path and returns a boxed `Read`
+/// trait object. It handles both plain and gzip-compressed files (if the
+/// `compression` feature is enabled).
 fn open_stream(path: &Path) -> ReaderResult<Box<dyn Read + Send>> {
     #[cfg(feature = "compression")]
     {
@@ -112,6 +163,20 @@ fn open_stream(path: &Path) -> ReaderResult<Box<dyn Read + Send>> {
     }
 }
 
+/// Parses a GXF stream and aggregates the records into `GenePred`s.
+///
+/// This function reads a GXF stream from the given reader, parses it, and
+/// aggregates the records into a `Vec<GenePred>`.
+///
+/// # Arguments
+///
+/// * `reader` - The reader to read the GXF stream from.
+/// * `options` - Configuration options for parsing the stream.
+///
+/// # Returns
+///
+/// A `ReaderResult` containing a `Vec<GenePred>` of the parsed records, or a
+/// `ReaderError` if the stream could not be read or parsed.
 fn parse_gxf_stream<F, R>(mut reader: R, options: &GxfOptions<'_>) -> ReaderResult<Vec<GenePred>>
 where
     F: GxfFormat,
@@ -184,6 +249,18 @@ struct GxfRecord {
 }
 
 impl GxfRecord {
+    /// Parses a single line of a GXF file into a `GxfRecord`.
+    ///
+    /// # Arguments
+    ///
+    /// * `line` - The raw line from the GXF file.
+    /// * `line_number` - The 1-based line number for error reporting.
+    /// * `sep` - The attribute separator character (e.g., `b' '` for GTF, `b'='` for GFF).
+    ///
+    /// # Returns
+    ///
+    /// A `ReaderResult` containing the parsed `GxfRecord`, or a `ReaderError`
+    /// if the line could not be parsed.
     fn parse(line: &str, line_number: usize, sep: u8) -> ReaderResult<Self> {
         let trimmed = line.trim_end_matches(['\n', '\r']);
         let mut fields = trimmed.split('\t');
@@ -258,6 +335,7 @@ fn missing(field: &'static str, line: usize) -> ReaderError {
     )
 }
 
+/// A helper struct to build a `GenePred` record from multiple GXF records.
 #[derive(Debug, Clone)]
 struct TranscriptBuilder {
     chrom: Vec<u8>,
@@ -274,6 +352,7 @@ struct TranscriptBuilder {
 }
 
 impl TranscriptBuilder {
+    /// Creates a new `TranscriptBuilder` from the first `GxfRecord` for a transcript.
     fn new(record: &GxfRecord) -> Self {
         Self {
             chrom: record.chrom.clone(),
@@ -290,6 +369,10 @@ impl TranscriptBuilder {
         }
     }
 
+    /// Updates the bounds of the transcript based on a new `GxfRecord`.
+    ///
+    /// Ensures that all records for a single transcript are on the same chromosome
+    /// and strand.
     fn update_bounds(
         &mut self,
         chrom: &[u8],
@@ -321,6 +404,10 @@ impl TranscriptBuilder {
         Ok(())
     }
 
+    /// Absorbs a feature from a `GxfRecord` into the builder.
+    ///
+    /// This method categorizes features like "exon", "cds", "start_codon",
+    /// and "stop_codon" and stores their intervals.
     fn absorb_feature(&mut self, feature: &[u8], start: u64, end: u64) {
         if eq_ignore_ascii(feature, b"transcript") || eq_ignore_ascii(feature, b"mrna") {
             self.transcript_extent = Some(match self.transcript_extent {
@@ -344,6 +431,9 @@ impl TranscriptBuilder {
         }
     }
 
+    /// Merges attributes from a `GxfRecord` into the builder's `Extras`.
+    ///
+    /// If a key already exists, the new values are appended to the existing ones.
     fn merge_attributes(&mut self, attributes: &Extras) {
         for (key, value) in attributes {
             match self.extras.entry(key.clone()) {
@@ -360,6 +450,10 @@ impl TranscriptBuilder {
         }
     }
 
+    /// Updates the name of the transcript, preferring specific attributes.
+    ///
+    /// It looks for "transcript_name", "Name", or "gene_name" in the attributes,
+    /// falling back to a provided `fallback` name if none are found.
     fn update_name(&mut self, attributes: &Extras, fallback: &[u8]) {
         if self.name.is_some() {
             return;
@@ -379,6 +473,10 @@ impl TranscriptBuilder {
         }
     }
 
+    /// Consumes the builder and produces a `GenePred` record.
+    ///
+    /// This method aggregates all collected information (exons, CDS, attributes)
+    /// into a final `GenePred` structure.
     fn into_genepred(mut self, parent_name: Vec<u8>) -> GenePred {
         let (span_start, span_end) = self
             .transcript_extent
@@ -435,12 +533,12 @@ impl TranscriptBuilder {
     }
 }
 
+/// Represents a genomic interval with a start and end position.
 #[derive(Debug, Clone, Copy)]
 struct Interval {
     start: u64,
     end: u64,
 }
-
 fn eq_ignore_ascii(lhs: &[u8], rhs: &[u8]) -> bool {
     lhs.len() == rhs.len()
         && lhs
@@ -451,7 +549,35 @@ fn eq_ignore_ascii(lhs: &[u8], rhs: &[u8]) -> bool {
 
 /// Fast attribute parser that extracts key/value pairs into an `Extras` map.
 ///
-/// * `sep` controls the delimiter between key and value (space for GTF, '=' for GFF).
+/// This function parses the attribute string from a GXF record into a `HashMap`
+/// of `Extras`. It handles different attribute separators (space for GTF, '=' for GFF)
+/// and quoted values.
+///
+/// # Arguments
+///
+/// * `line` - The raw byte slice of the attributes field.
+/// * `sep` - The delimiter between key and value (space for GTF, '=' for GFF).
+///
+/// # Returns
+///
+/// A `Result` containing the parsed `Extras` map, or a `ParseError` if the
+/// attribute string is empty.
+///
+/// # Examples
+///
+/// ```
+/// use genepred::gxf::parse_attributes;
+/// use genepred::genepred::{Extras, ExtraValue};
+/// use std::collections::HashMap;
+///
+/// let raw_gtf = b"gene_id \"ENSG00000223972\"; gene_name \"DDX11L1\";";
+/// let attrs_gtf = parse_attributes(raw_gtf, b' ').unwrap();
+/// assert_eq!(attrs_gtf.get(b"gene_id".as_ref()), Some(&ExtraValue::Scalar(b"ENSG00000223972".to_vec())));
+///
+/// let raw_gff = b"ID=tx1;Name=Example;";
+/// let attrs_gff = parse_attributes(raw_gff, b'=').unwrap();
+/// assert_eq!(attrs_gff.get(b"ID".as_ref()), Some(&ExtraValue::Scalar(b"tx1".to_vec())));
+/// ```
 pub fn parse_attributes(line: &[u8], sep: u8) -> Result<Extras, ParseError> {
     if line.is_empty() {
         return Err(ParseError::Empty);
@@ -542,6 +668,9 @@ pub fn parse_attributes(line: &[u8], sep: u8) -> Result<Extras, ParseError> {
     Ok(attributes)
 }
 
+/// Pushes an attribute key-value pair into the `Extras` map.
+///
+/// If the key already exists, the value is appended to the existing `ExtraValue`.
 fn push_attribute_value(attributes: &mut Extras, key: Vec<u8>, value: Vec<u8>) {
     match attributes.entry(key) {
         Entry::Vacant(slot) => {
@@ -556,6 +685,7 @@ fn push_attribute_value(attributes: &mut Extras, key: Vec<u8>, value: Vec<u8>) {
 /// Attribute parser error kinds.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {
+    /// Indicates that the attribute string was empty.
     Empty,
 }
 
@@ -569,6 +699,9 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Determines if a line should be skipped during parsing.
+///
+/// Lines are skipped if they are empty or start with a '#' character.
 fn should_skip(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed.is_empty() || trimmed.starts_with('#')
@@ -578,6 +711,10 @@ impl BedFormat for Gtf {
     const FIELD_COUNT: usize = 0;
     const SUPPORTS_STANDARD_READER: bool = false;
 
+    /// This implementation is not used directly.
+    ///
+    /// `Reader::<Gtf>` must be constructed with `from_gxf` as `Gtf` records
+    /// are aggregated into `GenePred`s during parsing.
     fn from_fields(_fields: &[&str], _extras: Extras, line: usize) -> ReaderResult<Self> {
         Err(ReaderError::invalid_field(
             line,
@@ -591,6 +728,10 @@ impl BedFormat for Gff {
     const FIELD_COUNT: usize = 0;
     const SUPPORTS_STANDARD_READER: bool = false;
 
+    /// This implementation is not used directly.
+    ///
+    /// `Reader::<Gff>` must be constructed with `from_gxf` as `Gff` records
+    /// are aggregated into `GenePred`s during parsing.
     fn from_fields(_fields: &[&str], _extras: Extras, line: usize) -> ReaderResult<Self> {
         Err(ReaderError::invalid_field(
             line,
@@ -601,12 +742,18 @@ impl BedFormat for Gff {
 }
 
 impl From<Gtf> for GenePred {
+    /// This conversion is not used directly.
+    ///
+    /// `Reader::<Gtf>` produces `GenePred`s directly via `from_gxf`.
     fn from(_: Gtf) -> Self {
         panic!("Reader::<Gtf> produces `GenePred`s directly via `from_gxf`");
     }
 }
 
 impl From<Gff> for GenePred {
+    /// This conversion is not used directly.
+    ///
+    /// `Reader::<Gff>` produces `GenePred`s directly via `from_gxf`.
     fn from(_: Gff) -> Self {
         panic!("Reader::<Gff> produces `GenePred`s directly via `from_gxf`");
     }

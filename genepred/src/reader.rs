@@ -1,4 +1,7 @@
 use std::fmt;
+
+#[cfg(feature = "mmap")]
+use std::any::TypeId;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::marker::PhantomData;
@@ -565,8 +568,18 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// ```
     #[cfg(feature = "mmap")]
     pub fn from_mmap<P: AsRef<Path>>(path: P) -> ReaderResult<Self> {
+        let path = path.as_ref();
+
+        if TypeId::of::<R>() == TypeId::of::<Gtf>() {
+            let records = gxf::read_gxf_mmap::<Gtf, _>(path, &GxfOptions::new())?;
+            return Reader::from_preloaded_records(records);
+        } else if TypeId::of::<R>() == TypeId::of::<Gff>() {
+            let records = gxf::read_gxf_mmap::<Gff, _>(path, &GxfOptions::new())?;
+            return Reader::from_preloaded_records(records);
+        }
+
         let map =
-            unsafe { MmapOptions::new().map(&File::open(&path)?) }.map_err(ReaderError::Mmap)?;
+            unsafe { MmapOptions::new().map(&File::open(path)?) }.map_err(ReaderError::Mmap)?;
 
         Ok(Self {
             inner: InnerSource::Mmap(MmapInner {
@@ -619,6 +632,12 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
         path: P,
         additional_fields: usize,
     ) -> ReaderResult<Self> {
+        if !R::SUPPORTS_STANDARD_READER {
+            return Err(ReaderError::Builder(
+                "ERROR: additional fields are not supported for this format".into(),
+            ));
+        }
+
         let map =
             unsafe { MmapOptions::new().map(&File::open(&path)?) }.map_err(ReaderError::Mmap)?;
 
@@ -885,6 +904,16 @@ impl Reader<Gtf> {
         let records = gxf::read_gxf_file::<Gtf, _>(path, &options)?;
         Reader::from_preloaded_records(records)
     }
+
+    #[cfg(feature = "mmap")]
+    /// Creates a `GTF` reader backed by a memory-mapped file.
+    pub fn from_mmap_with_options<'a, P: AsRef<Path>>(
+        path: P,
+        options: GxfOptions<'a>,
+    ) -> ReaderResult<Self> {
+        let records = gxf::read_gxf_mmap::<Gtf, _>(path, &options)?;
+        Reader::from_preloaded_records(records)
+    }
 }
 
 impl Reader<Gff> {
@@ -899,6 +928,16 @@ impl Reader<Gff> {
         options: GxfOptions<'a>,
     ) -> ReaderResult<Self> {
         let records = gxf::read_gxf_file::<Gff, _>(path, &options)?;
+        Reader::from_preloaded_records(records)
+    }
+
+    #[cfg(feature = "mmap")]
+    /// Creates a `GFF` reader backed by a memory-mapped file.
+    pub fn from_mmap_with_options<'a, P: AsRef<Path>>(
+        path: P,
+        options: GxfOptions<'a>,
+    ) -> ReaderResult<Self> {
+        let records = gxf::read_gxf_mmap::<Gff, _>(path, &options)?;
         Reader::from_preloaded_records(records)
     }
 }
@@ -1003,7 +1042,7 @@ fn parse_line<R: BedFormat>(
 ) -> ReaderResult<R> {
     let trimmed = line.trim();
     let mut fields: Vec<&str> = trimmed
-        .split(['\t', ' '])
+        .split('\t')
         .filter(|segment| !segment.is_empty())
         .collect();
 
