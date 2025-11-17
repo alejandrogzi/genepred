@@ -13,7 +13,11 @@ use rayon::prelude::*;
 #[cfg(feature = "mmap")]
 use std::sync::Arc;
 
-use crate::{bed::BedFormat, genepred::GenePred};
+use crate::{
+    bed::BedFormat,
+    genepred::{ExtraValue, Extras, GenePred},
+    gxf::{self, Gff, Gtf, GxfOptions},
+};
 
 /// Result alias for reader operations.
 pub type ReaderResult<T> = Result<T, ReaderError>;
@@ -246,6 +250,12 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
 
     /// Builds the `Reader`.
     pub fn build(mut self) -> ReaderResult<Reader<R>> {
+        if !R::SUPPORTS_STANDARD_READER {
+            return Err(ReaderError::Builder(
+                "ERROR: use `Reader::<Gtf>::from_gxf` for this format".into(),
+            ));
+        }
+
         let source = self
             .source
             .take()
@@ -376,6 +386,7 @@ pub struct Reader<R: BedFormat + Into<GenePred>> {
     buffer: String,
     additional_fields: usize,
     line_number: usize,
+    preloaded: Option<std::vec::IntoIter<GenePred>>,
     _marker: PhantomData<R>,
 }
 
@@ -508,8 +519,15 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
             buffer: String::with_capacity(1024),
             additional_fields,
             line_number: 0,
+            preloaded: None,
             _marker: PhantomData,
         })
+    }
+
+    pub(crate) fn from_preloaded_records(records: Vec<GenePred>) -> ReaderResult<Self> {
+        let mut reader = Self::from_stream(Box::new(io::empty()), 0, 1)?;
+        reader.preloaded = Some(records.into_iter());
+        Ok(reader)
     }
 
     /// Creates a new `Reader` from a memory-mapped file.
@@ -558,6 +576,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
             buffer: String::with_capacity(1024),
             additional_fields: 0,
             line_number: 0,
+            preloaded: None,
             _marker: PhantomData,
         })
     }
@@ -611,6 +630,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
             buffer: String::with_capacity(1024),
             additional_fields,
             line_number: 0,
+            preloaded: None,
             _marker: PhantomData,
         })
     }
@@ -693,6 +713,16 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// ```
     #[cfg(feature = "rayon")]
     pub fn par_records(mut self) -> ReaderResult<ParallelRecords<R>> {
+        if let Some(iter) = self.preloaded.take() {
+            let records: Vec<GenePred> = iter.collect();
+            return Ok(ParallelRecords {
+                lines: Vec::new(),
+                preloaded: Some(records),
+                additional_fields: self.additional_fields,
+                _marker: PhantomData,
+            });
+        }
+
         let mut lines = Vec::new();
         while let Some(line) = self.read_line_owned()? {
             let number = self.line_number;
@@ -703,6 +733,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
         }
         Ok(ParallelRecords {
             lines,
+            preloaded: None,
             additional_fields: self.additional_fields,
             _marker: PhantomData,
         })
@@ -729,6 +760,14 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// ```
     fn next_record(&mut self) -> Option<ReaderResult<GenePred>> {
         loop {
+            if let Some(iter) = self.preloaded.as_mut() {
+                if let Some(record) = iter.next() {
+                    return Some(Ok(record));
+                }
+                self.preloaded = None;
+                continue;
+            }
+
             match self.fill_buffer() {
                 Ok(true) => {
                     self.line_number += 1;
@@ -832,6 +871,38 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     }
 }
 
+impl Reader<Gtf> {
+    /// Creates a `GTF` reader that aggregates records into `GenePred`s.
+    pub fn from_gxf<P: AsRef<Path>>(path: P) -> ReaderResult<Self> {
+        Self::from_gxf_with_options(path, GxfOptions::new())
+    }
+
+    /// Creates a `GTF` reader with custom aggregation options.
+    pub fn from_gxf_with_options<'a, P: AsRef<Path>>(
+        path: P,
+        options: GxfOptions<'a>,
+    ) -> ReaderResult<Self> {
+        let records = gxf::read_gxf_file::<Gtf, _>(path, &options)?;
+        Reader::from_preloaded_records(records)
+    }
+}
+
+impl Reader<Gff> {
+    /// Creates a `GFF/GFF3` reader that aggregates records into `GenePred`s.
+    pub fn from_gxf<P: AsRef<Path>>(path: P) -> ReaderResult<Self> {
+        Self::from_gxf_with_options(path, GxfOptions::new())
+    }
+
+    /// Creates a `GFF/GFF3` reader with custom aggregation options.
+    pub fn from_gxf_with_options<'a, P: AsRef<Path>>(
+        path: P,
+        options: GxfOptions<'a>,
+    ) -> ReaderResult<Self> {
+        let records = gxf::read_gxf_file::<Gff, _>(path, &options)?;
+        Reader::from_preloaded_records(records)
+    }
+}
+
 impl<R: BedFormat + Into<GenePred>> Iterator for Reader<R> {
     type Item = ReaderResult<GenePred>;
 
@@ -863,6 +934,7 @@ impl<'a, R: BedFormat + Into<GenePred>> Iterator for Records<'a, R> {
 #[cfg(feature = "rayon")]
 pub struct ParallelRecords<R: BedFormat + Into<GenePred>> {
     lines: Vec<(usize, String)>,
+    preloaded: Option<Vec<GenePred>>,
     additional_fields: usize,
     _marker: PhantomData<R>,
 }
@@ -882,6 +954,13 @@ impl<R: BedFormat + Into<GenePred> + Send> ParallelIterator for ParallelRecords<
     where
         C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
     {
+        if let Some(records) = self.preloaded {
+            return records
+                .into_par_iter()
+                .map(ReaderResult::Ok)
+                .drive_unindexed(consumer);
+        }
+
         self.lines
             .into_par_iter()
             .map(|(line, text)| {
@@ -945,13 +1024,15 @@ fn parse_line<R: BedFormat>(
     }
 
     let extras = if additional_fields == 0 {
-        Vec::new()
+        Extras::new()
     } else {
         let extra_fields = fields.split_off(R::FIELD_COUNT);
-        extra_fields
-            .into_iter()
-            .map(|s| s.as_bytes().to_vec())
-            .collect()
+        let mut extras = Extras::new();
+        for (idx, field) in extra_fields.into_iter().enumerate() {
+            let key = (R::FIELD_COUNT + idx + 1).to_string().into_bytes();
+            extras.insert(key, ExtraValue::Scalar(field.as_bytes().to_vec()));
+        }
+        extras
     };
 
     R::from_fields(&fields[..R::FIELD_COUNT], extras, line_number)
