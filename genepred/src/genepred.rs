@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, Rgb, Strand};
+use crate::{
+    bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, Rgb},
+    strand::Strand,
+};
 
 /// Canonical representation of a BED record with up to 12 fields plus extras.
 ///
@@ -8,13 +11,13 @@ use crate::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, Rgb, Strand};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenePred {
     /// Chromosome or scaffold name.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// 0-based start position.
     pub start: u64,
     /// 1-based end position.
     pub end: u64,
     /// Optional feature name.
-    pub name: Option<String>,
+    pub name: Option<Vec<u8>>,
     /// Optional BED score (0-1000).
     pub score: Option<u16>,
     /// Optional strand information.
@@ -32,11 +35,11 @@ pub struct GenePred {
     /// Optional block starts (relative to start).
     pub block_starts: Option<Vec<u32>>,
     /// Additional trailing fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl GenePred {
-    pub fn from_coords(chrom: String, start: u64, end: u64, extras: Vec<String>) -> Self {
+    pub fn from_coords(chrom: Vec<u8>, start: u64, end: u64, extras: Vec<Vec<u8>>) -> Self {
         Self {
             chrom,
             start,
@@ -54,9 +57,9 @@ impl GenePred {
         }
     }
 
-    /// Returns the chromosome name.
+    /// Returns the chromosome name as raw bytes.
     #[inline]
-    pub fn chrom(&self) -> &str {
+    pub fn chrom(&self) -> &[u8] {
         &self.chrom
     }
 
@@ -72,9 +75,9 @@ impl GenePred {
         self.end
     }
 
-    /// Returns the feature name, if present.
+    /// Returns the feature name, if present, as raw bytes.
     #[inline]
-    pub fn name(&self) -> Option<&str> {
+    pub fn name(&self) -> Option<&[u8]> {
         self.name.as_deref()
     }
 
@@ -126,9 +129,9 @@ impl GenePred {
         self.block_starts.as_deref()
     }
 
-    /// Returns a reference to the extra fields.
+    /// Returns a reference to the extra fields as byte buffers.
     #[inline]
-    pub fn extras(&self) -> &[String] {
+    pub fn extras(&self) -> &[Vec<u8>] {
         &self.extras
     }
 
@@ -144,10 +147,8 @@ impl GenePred {
         self.start >= self.end
     }
 
-    // ========== Setters ==========
-
-    /// Sets the chromosome name.
-    pub fn set_chrom(&mut self, chrom: String) {
+    /// Sets the chromosome name bytes.
+    pub fn set_chrom(&mut self, chrom: Vec<u8>) {
         self.chrom = chrom;
     }
 
@@ -161,8 +162,8 @@ impl GenePred {
         self.end = end;
     }
 
-    /// Sets the feature name.
-    pub fn set_name(&mut self, name: Option<String>) {
+    /// Sets the feature name as an owned byte buffer.
+    pub fn set_name(&mut self, name: Option<Vec<u8>>) {
         self.name = name;
     }
 
@@ -206,13 +207,13 @@ impl GenePred {
         self.block_starts = block_starts;
     }
 
-    /// Sets the extra fields.
-    pub fn set_extras(&mut self, extras: Vec<String>) {
+    /// Sets the extra fields as owned byte buffers.
+    pub fn set_extras(&mut self, extras: Vec<Vec<u8>>) {
         self.extras = extras;
     }
 
-    /// Adds an extra field.
-    pub fn add_extra(&mut self, extra: String) {
+    /// Adds an extra field as raw bytes.
+    pub fn add_extra(&mut self, extra: Vec<u8>) {
         self.extras.push(extra);
     }
 
@@ -331,11 +332,21 @@ impl GenePred {
     /// * `delimiter` - The delimiter to split on (e.g., ",", ";", "|")
     ///
     /// # Returns
-    /// A flattened vector of all split strings from all extra fields.
-    pub fn unnest_extras(&self, delimiter: &str) -> Vec<String> {
+    /// A flattened vector of all split values from all extra fields (each as a byte buffer).
+    pub fn unnest_extras(&self, delimiter: &str) -> Vec<Vec<u8>> {
+        if delimiter.is_empty() {
+            return self.extras.clone();
+        }
+
         self.extras
             .iter()
-            .flat_map(|s| s.split(delimiter).map(|part| part.to_string()))
+            .flat_map(|extra| match std::str::from_utf8(extra) {
+                Ok(text) => text
+                    .split(delimiter)
+                    .map(|part| part.as_bytes().to_vec())
+                    .collect::<Vec<_>>(),
+                Err(_) => vec![extra.clone()],
+            })
             .collect()
     }
 
@@ -372,10 +383,16 @@ impl GenePred {
 
 impl fmt::Display for GenePred {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}\t{}\t{}", self.chrom, self.start, self.end)?;
+        write!(
+            f,
+            "{}\t{}\t{}",
+            String::from_utf8_lossy(&self.chrom),
+            self.start,
+            self.end
+        )?;
 
         if let Some(name) = &self.name {
-            write!(f, "\t{}", name)?;
+            write!(f, "\t{}", String::from_utf8_lossy(name))?;
         }
         if let Some(score) = self.score {
             write!(f, "\t{}", score)?;
@@ -415,7 +432,7 @@ impl fmt::Display for GenePred {
         }
         for extra in &self.extras {
             f.write_str("\t")?;
-            f.write_str(extra)?;
+            f.write_str(&String::from_utf8_lossy(extra))?;
         }
 
         Ok(())

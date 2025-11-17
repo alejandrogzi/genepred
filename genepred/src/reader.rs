@@ -362,7 +362,9 @@ struct MmapInner {
 ///         let record = record?;
 ///         println!(
 ///             "chrom: {}, start: {}, end: {}",
-///             record.chrom, record.start, record.end
+///             String::from_utf8_lossy(&record.chrom),
+///             record.start,
+///             record.end
 ///         );
 ///     }
 ///
@@ -716,7 +718,12 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
     ///     let mut reader = Reader::from_path("tests/data/simple.bed")?;
     ///     let record = reader.next_record()?;
-    ///     println!("chrom: {}, start: {}, end: {}", record.chrom, record.start, record.end);
+    ///     println!(
+    ///         "chrom: {}, start: {}, end: {}",
+    ///         String::from_utf8_lossy(&record.chrom),
+    ///         record.start,
+    ///         record.end
+    ///     );
     ///     Ok(())
     /// }
     /// ```
@@ -901,7 +908,12 @@ impl<R: BedFormat + Into<GenePred> + Send> ParallelIterator for ParallelRecords<
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let mut reader = Reader::from_path("tests/data/simple.bed")?;
 ///     let record = reader.parse_line("chr1\t100\t200")?;
-///     println!("chrom: {}, start: {}, end: {}", record.chrom, record.start, record.end);
+///     println!(
+///         "chrom: {}, start: {}, end: {}",
+///         String::from_utf8_lossy(&record.chrom),
+///         record.start,
+///         record.end
+///     );
 ///     Ok(())
 /// }
 /// ```
@@ -936,7 +948,10 @@ fn parse_line<R: BedFormat>(
         Vec::new()
     } else {
         let extra_fields = fields.split_off(R::FIELD_COUNT);
-        extra_fields.into_iter().map(|s| s.to_string()).collect()
+        extra_fields
+            .into_iter()
+            .map(|s| s.as_bytes().to_vec())
+            .collect()
     };
 
     R::from_fields(&fields[..R::FIELD_COUNT], extras, line_number)

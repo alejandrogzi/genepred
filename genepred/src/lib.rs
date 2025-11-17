@@ -51,7 +51,9 @@
 //!     for record in reader.records() {
 //!         let record = record?;
 //!         println!("Region: {}:{}-{}",
-//!             record.chrom, record.start, record.end);
+//!             String::from_utf8_lossy(&record.chrom),
+//!             record.start,
+//!             record.end);
 //!     }
 //!
 //!     Ok(())
@@ -71,9 +73,9 @@
 //!     for record in reader.records() {
 //!         let record = record?;
 //!         println!("Gene: {} on {} strand at {}:{}-{}",
-//!             record.name,
+//!             String::from_utf8_lossy(&record.name),
 //!             record.strand,
-//!             record.chrom,
+//!             String::from_utf8_lossy(&record.chrom),
 //!             record.start,
 //!             record.end
 //!         );
@@ -363,7 +365,9 @@
 pub mod bed;
 pub mod genepred;
 pub mod reader;
+pub mod strand;
 
 pub use bed::*;
 pub use genepred::GenePred;
 pub use reader::{Reader, ReaderBuilder, ReaderMode, ReaderResult};
+pub use strand::Strand;

@@ -1,6 +1,9 @@
 use std::fmt;
 
-use crate::reader::{ReaderError, ReaderResult};
+use crate::{
+    reader::{ReaderError, ReaderResult},
+    strand::Strand,
+};
 
 const CHROM_START: &str = "chromStart";
 const CHROM_END: &str = "chromEnd";
@@ -10,68 +13,6 @@ const BLOCK_STARTS: &str = "blockStarts";
 const THICK_START: &str = "thickStart";
 const THICK_END: &str = "thickEnd";
 const ITEM_RGB: &str = "itemRgb";
-
-/// Represents the strand of a genomic feature.
-///
-/// This enum is used to indicate the orientation of a feature on a reference sequence.
-///
-/// # Example
-///
-/// ```rust,no_run,ignore
-/// use genepred::bed::Strand;
-///
-/// let strand = Strand::Forward;
-/// assert_eq!(strand, Strand::Forward);
-/// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Strand {
-    /// Positive strand (`+`).
-    Forward,
-    /// Negative strand (`-`).
-    Reverse,
-    /// Unknown strand (`.` or `?`).
-    Unknown,
-}
-
-impl Strand {
-    /// Parse a string into a `Strand`.
-    ///
-    /// # Errors
-    ///
-    /// This function returns an error if the string is not a valid strand.
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run,ignore
-    /// use genepred::bed::Strand;
-    ///
-    /// let strand = Strand::parse("+")?;
-    /// assert_eq!(strand, Strand::Forward);
-    /// Ok(())
-    /// ```
-    fn parse(raw: &str, line: usize) -> ReaderResult<Self> {
-        match raw {
-            "+" => Ok(Strand::Forward),
-            "-" => Ok(Strand::Reverse),
-            "." | "?" => Ok(Strand::Unknown),
-            other => Err(ReaderError::invalid_field(
-                line,
-                "strand",
-                format!("ERROR: expected '+', '-', '.', or '?', got '{other}' in {line}:strand"),
-            )),
-        }
-    }
-}
-
-impl fmt::Display for Strand {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Strand::Forward => f.write_str("+"),
-            Strand::Reverse => f.write_str("-"),
-            Strand::Unknown => f.write_str("."),
-        }
-    }
-}
 
 /// Represents an RGB color triplet.
 ///
@@ -168,15 +109,15 @@ impl fmt::Display for ItemRgb {
 /// // A custom BED format with a single field.
 /// #[derive(Debug, Clone, PartialEq, Eq)]
 /// struct MyBed {
-///    chrom: String,
+///    chrom: Vec<u8>,
 /// }
 ///
 /// impl BedFormat for MyBed {
 ///     const FIELD_COUNT: usize = 1;
 ///
-///     fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+///     fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
 ///         Ok(Self {
-///             chrom: fields[0].to_string(),
+///             chrom: fields[0].as_bytes().to_vec(),
 ///         })
 ///     }
 /// }
@@ -190,7 +131,7 @@ pub trait BedFormat: Sized + fmt::Debug + Send + Sync + 'static {
     /// # Arguments
     ///
     /// * `fields` - A slice of strings representing the fields of the BED record.
-    /// * `extras` - A vector of strings representing any extra fields beyond
+    /// * `extras` - A vector of byte buffers representing any extra fields beyond
     ///   the standard BED fields.
     /// * `line` - The line number of the record in the input file.
     ///
@@ -198,7 +139,7 @@ pub trait BedFormat: Sized + fmt::Debug + Send + Sync + 'static {
     ///
     /// A `ReaderResult` containing the new record, or a `ReaderError` if the
     /// record could not be parsed.
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self>;
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self>;
 }
 
 /// Parses a BED field to a u64
@@ -282,21 +223,21 @@ fn __parse_sizes(list: &str, line: usize, label: &'static str) -> ReaderResult<V
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed3 {
     /// The chromosome or scaffold of the feature.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// Any extra fields beyond the standard BED3 fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl BedFormat for Bed3 {
     const FIELD_COUNT: usize = 3;
 
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
         Ok(Self {
-            chrom: fields[0].to_string(),
+            chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
             end: __to_u64(fields[2], line, CHROM_END)?,
             extras,
@@ -324,26 +265,26 @@ impl BedFormat for Bed3 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed4 {
     /// The chromosome or scaffold of the feature.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// The name of the feature.
-    pub name: String,
+    pub name: Vec<u8>,
     /// Any extra fields beyond the standard BED4 fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl BedFormat for Bed4 {
     const FIELD_COUNT: usize = 4;
 
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
         Ok(Self {
-            chrom: fields[0].to_string(),
+            chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
             end: __to_u64(fields[2], line, CHROM_END)?,
-            name: fields[3].to_string(),
+            name: fields[3].as_bytes().to_vec(),
             extras,
         })
     }
@@ -370,28 +311,28 @@ impl BedFormat for Bed4 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed5 {
     /// The chromosome or scaffold of the feature.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// The name of the feature.
-    pub name: String,
+    pub name: Vec<u8>,
     /// A score between 0 and 1000.
     pub score: u16,
     /// Any extra fields beyond the standard BED5 fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl BedFormat for Bed5 {
     const FIELD_COUNT: usize = 5;
 
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
         Ok(Self {
-            chrom: fields[0].to_string(),
+            chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
             end: __to_u64(fields[2], line, CHROM_END)?,
-            name: fields[3].to_string(),
+            name: fields[3].as_bytes().to_vec(),
             score: __parse_score(fields[4], line)?,
             extras,
         })
@@ -420,30 +361,30 @@ impl BedFormat for Bed5 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed6 {
     /// The chromosome or scaffold of the feature.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// The name of the feature.
-    pub name: String,
+    pub name: Vec<u8>,
     /// A score between 0 and 1000.
     pub score: u16,
     /// The strand of the feature.
     pub strand: Strand,
     /// Any extra fields beyond the standard BED6 fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl BedFormat for Bed6 {
     const FIELD_COUNT: usize = 6;
 
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
         Ok(Self {
-            chrom: fields[0].to_string(),
+            chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
             end: __to_u64(fields[2], line, CHROM_END)?,
-            name: fields[3].to_string(),
+            name: fields[3].as_bytes().to_vec(),
             score: __parse_score(fields[4], line)?,
             strand: Strand::parse(fields[5], line)?,
             extras,
@@ -477,13 +418,13 @@ impl BedFormat for Bed6 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed8 {
     /// The chromosome or scaffold of the feature.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// The name of the feature.
-    pub name: String,
+    pub name: Vec<u8>,
     /// A score between 0 and 1000.
     pub score: u16,
     /// The strand of the feature.
@@ -493,18 +434,18 @@ pub struct Bed8 {
     /// The ending position of the thick region.
     pub thick_end: u64,
     /// Any extra fields beyond the standard BED8 fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl BedFormat for Bed8 {
     const FIELD_COUNT: usize = 8;
 
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
         Ok(Self {
-            chrom: fields[0].to_string(),
+            chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
             end: __to_u64(fields[2], line, CHROM_END)?,
-            name: fields[3].to_string(),
+            name: fields[3].as_bytes().to_vec(),
             score: __parse_score(fields[4], line)?,
             strand: Strand::parse(fields[5], line)?,
             thick_start: __to_u64(fields[6], line, THICK_START)?,
@@ -539,13 +480,13 @@ impl BedFormat for Bed8 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed9 {
     /// The chromosome or scaffold of the feature.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// The name of the feature.
-    pub name: String,
+    pub name: Vec<u8>,
     /// A score between 0 and 1000.
     pub score: u16,
     /// The strand of the feature.
@@ -557,7 +498,7 @@ pub struct Bed9 {
     /// The RGB color of the feature.
     pub item_rgb: Rgb,
     /// Any extra fields beyond the standard BED9 fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl BedFormat for Bed9 {
@@ -604,12 +545,12 @@ impl BedFormat for Bed9 {
     /// assert_eq!(record.thick_start, 120);
     /// assert_eq!(record.thick_end, 180);
     /// ```
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
         Ok(Self {
-            chrom: fields[0].to_string(),
+            chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
             end: __to_u64(fields[2], line, CHROM_END)?,
-            name: fields[3].to_string(),
+            name: fields[3].as_bytes().to_vec(),
             score: __parse_score(fields[4], line)?,
             strand: Strand::parse(fields[5], line)?,
             thick_start: __to_u64(fields[6], line, THICK_START)?,
@@ -652,13 +593,13 @@ impl BedFormat for Bed9 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bed12 {
     /// The chromosome or scaffold of the feature.
-    pub chrom: String,
+    pub chrom: Vec<u8>,
     /// The 0-based starting position of the feature.
     pub start: u64,
     /// The 1-based ending position of the feature.
     pub end: u64,
     /// The name of the feature.
-    pub name: String,
+    pub name: Vec<u8>,
     /// A score between 0 and 1000.
     pub score: u16,
     /// The strand of the feature.
@@ -676,7 +617,7 @@ pub struct Bed12 {
     /// A comma-separated list of block starts, relative to `start`.
     pub block_starts: Vec<u32>,
     /// Any extra fields beyond the standard BED12 fields.
-    pub extras: Vec<String>,
+    pub extras: Vec<Vec<u8>>,
 }
 
 impl BedFormat for Bed12 {
@@ -726,7 +667,7 @@ impl BedFormat for Bed12 {
     /// assert_eq!(record.thick_start, 120);
     /// assert_eq!(record.thick_end
     /// ```
-    fn from_fields(fields: &[&str], extras: Vec<String>, line: usize) -> ReaderResult<Self> {
+    fn from_fields(fields: &[&str], extras: Vec<Vec<u8>>, line: usize) -> ReaderResult<Self> {
         let block_count = __to_u32(fields[9], line, BLOCK_COUNT)?;
         let block_sizes = __parse_sizes(fields[10], line, BLOCK_SIZES)?;
         let block_starts = __parse_sizes(fields[11], line, BLOCK_STARTS)?;
@@ -762,10 +703,10 @@ impl BedFormat for Bed12 {
         }
 
         Ok(Self {
-            chrom: fields[0].to_string(),
+            chrom: fields[0].as_bytes().to_vec(),
             start: __to_u64(fields[1], line, CHROM_START)?,
             end: __to_u64(fields[2], line, CHROM_END)?,
-            name: fields[3].to_string(),
+            name: fields[3].as_bytes().to_vec(),
             score: __parse_score(fields[4], line)?,
             strand: Strand::parse(fields[5], line)?,
             thick_start: __to_u64(fields[6], line, THICK_START)?,
