@@ -87,6 +87,7 @@ impl fmt::Display for ReaderError {
 }
 
 impl std::error::Error for ReaderError {
+    /// Returns the source error, if any.
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             ReaderError::Io(err) => Some(err),
@@ -98,12 +99,14 @@ impl std::error::Error for ReaderError {
 }
 
 impl From<io::Error> for ReaderError {
+    /// Creates a new `ReaderError` from an `io::Error`.
     fn from(err: io::Error) -> Self {
         ReaderError::Io(err)
     }
 }
 
 impl ReaderError {
+    /// Creates a new `ReaderError` for an invalid field.
     pub(crate) fn invalid_field(line: usize, field: &'static str, message: String) -> ReaderError {
         ReaderError::InvalidField {
             line,
@@ -112,6 +115,7 @@ impl ReaderError {
         }
     }
 
+    /// Creates a new `ReaderError` for an unexpected field count.
     pub(crate) fn unexpected_field_count(
         line: usize,
         expected: usize,
@@ -124,6 +128,7 @@ impl ReaderError {
         }
     }
 
+    /// Creates a new `ReaderError` for an invalid encoding.
     #[cfg_attr(not(feature = "mmap"), allow(dead_code))]
     fn invalid_encoding(line: usize, message: impl Into<String>) -> ReaderError {
         ReaderError::InvalidEncoding {
