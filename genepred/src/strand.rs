@@ -8,8 +8,8 @@ use crate::reader::{ReaderError, ReaderResult};
 ///
 /// # Example
 ///
-/// ```rust,no_run,ignore
-/// use genepred::bed::Strand;
+/// ```
+/// use genepred::strand::Strand;
 ///
 /// let strand = Strand::Forward;
 /// assert_eq!(strand, Strand::Forward);
@@ -25,7 +25,7 @@ pub enum Strand {
 }
 
 impl Strand {
-    /// Parse a string into a `Strand`.
+    /// Parses a string into a `Strand`.
     ///
     /// # Errors
     ///
@@ -33,14 +33,17 @@ impl Strand {
     ///
     /// # Example
     ///
-    /// ```rust,no_run,ignore
-    /// use genepred::bed::Strand;
+    /// ```rust,ignore
+    /// use genepred::strand::Strand;
     ///
-    /// let strand = Strand::parse("+")?;
-    /// assert_eq!(strand, Strand::Forward);
-    /// Ok(())
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let strand = Strand::parse("+", 1)?;
+    ///     assert_eq!(strand, Strand::Forward);
+    ///
+    ///     Ok(())
+    /// }
     /// ```
-    pub fn parse(raw: &str, line: usize) -> ReaderResult<Self> {
+    pub(crate) fn parse(raw: &str, line: usize) -> ReaderResult<Self> {
         match raw {
             "+" => Ok(Strand::Forward),
             "-" => Ok(Strand::Reverse),
