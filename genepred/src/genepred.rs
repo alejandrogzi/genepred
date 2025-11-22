@@ -2,39 +2,35 @@ use std::collections::{hash_map::Entry, HashMap};
 use std::fmt;
 
 use crate::{
-    bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, Rgb},
+    bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9},
     strand::Strand,
 };
 
-/// Canonical representation of a BED record with up to 12 fields plus extras.
+/// Canonical representation of a GenePred record.
 ///
-/// Fields that are not present in the originating BED record are left as `None`.
+/// Fields that are not present in the originating record are left as `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenePred {
     /// Chromosome or scaffold name.
     pub chrom: Vec<u8>,
-    /// 0-based start position.
+    /// 0-based transcription start position.
     pub start: u64,
-    /// 1-based end position.
+    /// 1-based transcription end position.
     pub end: u64,
-    /// Optional feature name.
+    /// Optional transcript or gene name.
     pub name: Option<Vec<u8>>,
-    /// Optional BED score (0-1000).
-    pub score: Option<u16>,
     /// Optional strand information.
     pub strand: Option<Strand>,
-    /// Optional thick start (coding start).
+    /// Optional coding region start.
     pub thick_start: Option<u64>,
-    /// Optional thick end (coding end).
+    /// Optional coding region end.
     pub thick_end: Option<u64>,
-    /// Optional RGB color.
-    pub item_rgb: Option<Rgb>,
-    /// Optional block count.
+    /// Optional exon (block) count.
     pub block_count: Option<u32>,
-    /// Optional block sizes.
-    pub block_sizes: Option<Vec<u32>>,
-    /// Optional block starts (relative to start).
-    pub block_starts: Option<Vec<u32>>,
+    /// Optional exon start positions (absolute coordinates).
+    pub block_starts: Option<Vec<u64>>,
+    /// Optional exon end positions (absolute coordinates).
+    pub block_ends: Option<Vec<u64>>,
     /// Additional trailing fields grouped by key.
     pub extras: Extras,
 }
@@ -204,14 +200,12 @@ impl GenePred {
             start,
             end,
             name: None,
-            score: None,
             strand: None,
             thick_start: None,
             thick_end: None,
-            item_rgb: None,
             block_count: None,
-            block_sizes: None,
             block_starts: None,
+            block_ends: None,
             extras,
         }
     }
@@ -240,12 +234,6 @@ impl GenePred {
         self.name.as_deref()
     }
 
-    /// Returns the score, if present.
-    #[inline]
-    pub fn score(&self) -> Option<u16> {
-        self.score
-    }
-
     /// Returns the strand information, if present.
     #[inline]
     pub fn strand(&self) -> Option<Strand> {
@@ -264,28 +252,22 @@ impl GenePred {
         self.thick_end
     }
 
-    /// Returns the RGB color, if present.
-    #[inline]
-    pub fn item_rgb(&self) -> Option<Rgb> {
-        self.item_rgb
-    }
-
     /// Returns the block count, if present.
     #[inline]
     pub fn block_count(&self) -> Option<u32> {
         self.block_count
     }
 
-    /// Returns a reference to the block sizes, if present.
-    #[inline]
-    pub fn block_sizes(&self) -> Option<&[u32]> {
-        self.block_sizes.as_deref()
-    }
-
     /// Returns a reference to the block starts, if present.
     #[inline]
-    pub fn block_starts(&self) -> Option<&[u32]> {
+    pub fn block_starts(&self) -> Option<&[u64]> {
         self.block_starts.as_deref()
+    }
+
+    /// Returns a reference to the block ends, if present.
+    #[inline]
+    pub fn block_ends(&self) -> Option<&[u64]> {
+        self.block_ends.as_deref()
     }
 
     /// Returns a reference to all extra key/value pairs.
@@ -332,11 +314,6 @@ impl GenePred {
         self.name = name;
     }
 
-    /// Sets the score.
-    pub fn set_score(&mut self, score: Option<u16>) {
-        self.score = score;
-    }
-
     /// Sets the strand information.
     pub fn set_strand(&mut self, strand: Option<Strand>) {
         self.strand = strand;
@@ -352,24 +329,19 @@ impl GenePred {
         self.thick_end = thick_end;
     }
 
-    /// Sets the RGB color.
-    pub fn set_item_rgb(&mut self, item_rgb: Option<Rgb>) {
-        self.item_rgb = item_rgb;
-    }
-
     /// Sets the block count.
     pub fn set_block_count(&mut self, block_count: Option<u32>) {
         self.block_count = block_count;
     }
 
-    /// Sets the block sizes.
-    pub fn set_block_sizes(&mut self, block_sizes: Option<Vec<u32>>) {
-        self.block_sizes = block_sizes;
+    /// Sets the block starts.
+    pub fn set_block_starts(&mut self, block_starts: Option<Vec<u64>>) {
+        self.block_starts = block_starts;
     }
 
-    /// Sets the block starts.
-    pub fn set_block_starts(&mut self, block_starts: Option<Vec<u32>>) {
-        self.block_starts = block_starts;
+    /// Sets the block ends.
+    pub fn set_block_ends(&mut self, block_ends: Option<Vec<u64>>) {
+        self.block_ends = block_ends;
     }
 
     /// Sets the entire extras map.
@@ -413,24 +385,30 @@ impl GenePred {
     ///
     /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
     /// gene.set_block_count(Some(2));
-    /// gene.set_block_sizes(Some(vec![10, 20]));
-    /// gene.set_block_starts(Some(vec![0, 30]));
+    /// gene.set_block_starts(Some(vec![100, 130]));
+    /// gene.set_block_ends(Some(vec![110, 150]));
     ///
     /// assert_eq!(gene.exons(), vec![(100, 110), (130, 150)]);
     /// ```
     pub fn exons(&self) -> Vec<(u64, u64)> {
-        match (&self.block_count, &self.block_sizes, &self.block_starts) {
-            (Some(count), Some(sizes), Some(starts)) if *count > 0 => {
+        match (&self.block_count, &self.block_starts, &self.block_ends) {
+            (Some(count), Some(starts), Some(ends)) if *count > 0 => {
                 let count = *count as usize;
                 let mut exons = Vec::with_capacity(count);
 
-                for i in 0..count.min(sizes.len()).min(starts.len()) {
-                    let exon_start = self.start + starts[i] as u64;
-                    let exon_end = exon_start + sizes[i] as u64;
-                    exons.push((exon_start, exon_end));
+                for i in 0..count.min(starts.len()).min(ends.len()) {
+                    let exon_start = starts[i];
+                    let exon_end = ends[i];
+                    if exon_start < exon_end {
+                        exons.push((exon_start, exon_end));
+                    }
                 }
 
-                exons
+                if exons.is_empty() {
+                    vec![(self.start, self.end)]
+                } else {
+                    exons
+                }
             }
             _ => vec![(self.start, self.end)],
         }
@@ -451,8 +429,8 @@ impl GenePred {
     ///
     /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
     /// gene.set_block_count(Some(2));
-    /// gene.set_block_sizes(Some(vec![10, 20]));
-    /// gene.set_block_starts(Some(vec![0, 30]));
+    /// gene.set_block_starts(Some(vec![100, 130]));
+    /// gene.set_block_ends(Some(vec![110, 150]));
     ///
     /// assert_eq!(gene.introns(), vec![(110, 130)]);
     /// ```
@@ -505,8 +483,8 @@ impl GenePred {
     ///
     /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
     /// gene.set_block_count(Some(2));
-    /// gene.set_block_sizes(Some(vec![10, 20]));
-    /// gene.set_block_starts(Some(vec![0, 30]));
+    /// gene.set_block_starts(Some(vec![100, 130]));
+    /// gene.set_block_ends(Some(vec![110, 150]));
     /// gene.set_thick_start(Some(105));
     /// gene.set_thick_end(Some(140));
     ///
@@ -616,8 +594,8 @@ impl GenePred {
     ///
     /// let mut gene = GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new());
     /// gene.set_block_count(Some(2));
-    /// gene.set_block_sizes(Some(vec![10, 20]));
-    /// gene.set_block_starts(Some(vec![0, 80]));
+    /// gene.set_block_starts(Some(vec![100, 180]));
+    /// gene.set_block_ends(Some(vec![120, 200]));
     ///
     /// assert!(gene.exon_overlaps(105, 115));
     /// assert!(!gene.exon_overlaps(120, 130));
@@ -641,46 +619,38 @@ impl GenePred {
 
 impl fmt::Display for GenePred {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = self
+            .name
+            .as_ref()
+            .map(|n| String::from_utf8_lossy(n).into_owned())
+            .unwrap_or_else(|| ".".to_string());
+        let strand = self
+            .strand
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| ".".to_string());
+
+        let cds_start = self.thick_start.unwrap_or(self.start);
+        let cds_end = self.thick_end.unwrap_or(self.end);
+        let inferred_block_count = self
+            .block_count
+            .or_else(|| self.block_starts.as_ref().map(|starts| starts.len() as u32))
+            .unwrap_or(0);
+
         write!(
             f,
-            "{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            name,
             String::from_utf8_lossy(&self.chrom),
+            strand,
             self.start,
-            self.end
+            self.end,
+            cds_start,
+            cds_end,
+            inferred_block_count
         )?;
 
-        if let Some(name) = &self.name {
-            write!(f, "\t{}", String::from_utf8_lossy(name))?;
-        }
-        if let Some(score) = self.score {
-            write!(f, "\t{}", score)?;
-        }
-        if let Some(strand) = self.strand {
-            write!(f, "\t{}", strand)?;
-        }
-        if let Some(thick_start) = self.thick_start {
-            write!(f, "\t{}", thick_start)?;
-        }
-        if let Some(thick_end) = self.thick_end {
-            write!(f, "\t{}", thick_end)?;
-        }
-        if let Some(item_rgb) = self.item_rgb {
-            write!(f, "\t{}", item_rgb)?;
-        }
-        if let Some(block_count) = self.block_count {
-            write!(f, "\t{}", block_count)?;
-        }
-        if let Some(block_sizes) = &self.block_sizes {
-            f.write_str("\t")?;
-            if let Some((first, rest)) = block_sizes.split_first() {
-                write!(f, "{}", first)?;
-                for size in rest {
-                    write!(f, ",{}", size)?;
-                }
-            }
-        }
+        f.write_str("\t")?;
         if let Some(block_starts) = &self.block_starts {
-            f.write_str("\t")?;
             if let Some((first, rest)) = block_starts.split_first() {
                 write!(f, "{}", first)?;
                 for start in rest {
@@ -688,6 +658,17 @@ impl fmt::Display for GenePred {
                 }
             }
         }
+
+        f.write_str("\t")?;
+        if let Some(block_ends) = &self.block_ends {
+            if let Some((first, rest)) = block_ends.split_first() {
+                write!(f, "{}", first)?;
+                for end in rest {
+                    write!(f, ",{}", end)?;
+                }
+            }
+        }
+
         if !self.extras.is_empty() {
             let mut keys: Vec<&Vec<u8>> = self.extras.keys().collect();
             keys.sort();
@@ -739,7 +720,6 @@ impl From<Bed5> for GenePred {
     fn from(record: Bed5) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
         gene.name = Some(record.name);
-        gene.score = Some(record.score);
         gene
     }
 }
@@ -749,7 +729,6 @@ impl From<Bed6> for GenePred {
     fn from(record: Bed6) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
         gene.name = Some(record.name);
-        gene.score = Some(record.score);
         gene.strand = Some(record.strand);
         gene
     }
@@ -760,7 +739,6 @@ impl From<Bed8> for GenePred {
     fn from(record: Bed8) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
         gene.name = Some(record.name);
-        gene.score = Some(record.score);
         gene.strand = Some(record.strand);
         gene.thick_start = Some(record.thick_start);
         gene.thick_end = Some(record.thick_end);
@@ -773,11 +751,9 @@ impl From<Bed9> for GenePred {
     fn from(record: Bed9) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
         gene.name = Some(record.name);
-        gene.score = Some(record.score);
         gene.strand = Some(record.strand);
         gene.thick_start = Some(record.thick_start);
         gene.thick_end = Some(record.thick_end);
-        gene.item_rgb = Some(record.item_rgb);
         gene
     }
 }
@@ -787,14 +763,25 @@ impl From<Bed12> for GenePred {
     fn from(record: Bed12) -> Self {
         let mut gene = GenePred::from_coords(record.chrom, record.start, record.end, record.extras);
         gene.name = Some(record.name);
-        gene.score = Some(record.score);
         gene.strand = Some(record.strand);
         gene.thick_start = Some(record.thick_start);
         gene.thick_end = Some(record.thick_end);
-        gene.item_rgb = Some(record.item_rgb);
         gene.block_count = Some(record.block_count);
-        gene.block_sizes = Some(record.block_sizes);
-        gene.block_starts = Some(record.block_starts);
+
+        let mut block_starts = Vec::with_capacity(record.block_starts.len());
+        let mut block_ends = Vec::with_capacity(record.block_starts.len());
+        for (offset, size) in record
+            .block_starts
+            .into_iter()
+            .zip(record.block_sizes.into_iter())
+        {
+            let start = record.start + offset as u64;
+            let end = start + size as u64;
+            block_starts.push(start);
+            block_ends.push(end);
+        }
+        gene.block_starts = Some(block_starts);
+        gene.block_ends = Some(block_ends);
         gene
     }
 }

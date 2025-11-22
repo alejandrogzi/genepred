@@ -42,12 +42,11 @@
 //!
 //! BED3 is the minimal format with chromosome, start, and end coordinates:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed3};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut reader = Reader::<Bed3>::from_path("data/regions.bed")?;
-//!
 //!     for record in reader.records() {
 //!         let record = record?;
 //!         println!("Region: {}:{}-{}",
@@ -55,7 +54,6 @@
 //!             record.start,
 //!             record.end);
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -64,23 +62,27 @@
 //!
 //! BED6 includes name, score, and strand information:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed6};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut reader = Reader::<Bed6>::from_path("data/genes.bed")?;
-//!
 //!     for record in reader.records() {
 //!         let record = record?;
-//!         println!("Gene: {} on {} strand at {}:{}-{}",
-//!             String::from_utf8_lossy(&record.name),
-//!             record.strand,
-//!             String::from_utf8_lossy(&record.chrom),
-//!             record.start,
-//!             record.end
+//!         let name = record.name().unwrap_or(b"<unknown>");
+//!         let strand = record
+//!             .strand()
+//!             .map(|s| s.to_string())
+//!             .unwrap_or_else(|| ".".into());
+//!         println!(
+//!             "Gene: {} on {} strand at {}:{}-{}",
+//!             String::from_utf8_lossy(name),
+//!             strand,
+//!             String::from_utf8_lossy(record.chrom()),
+//!             record.start(),
+//!             record.end()
 //!         );
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -89,27 +91,23 @@
 //!
 //! BED12 is the full format with exon information for gene structures:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed12};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut reader = Reader::<Bed12>::from_path("data/transcripts.bed")?;
-//!
 //!     for record in reader.records() {
 //!         let record = record?;
-//!         println!("Transcript: {} with {} exons",
-//!             record.name,
-//!             record.block_count
+//!         let name = record.name().unwrap_or(b"<unknown>");
+//!         println!(
+//!             "Transcript: {} with {} exons",
+//!             String::from_utf8_lossy(name),
+//!             record.exon_count()
 //!         );
-//!
-//!         // Access exon coordinates
-//!         for i in 0..record.block_count {
-//!             let exon_start = record.start + record.block_starts[i as usize];
-//!             let exon_size = record.block_sizes[i as usize];
-//!             println!("  Exon {}: {}-{}", i + 1, exon_start, exon_start + exon_size);
+//!         for (i, (exon_start, exon_end)) in record.exons().iter().enumerate() {
+//!             println!("  Exon {}: {}-{}", i + 1, exon_start, exon_end);
 //!         }
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -120,7 +118,7 @@
 //!
 //! For more control over reading behavior:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed6, ReaderMode};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -130,12 +128,10 @@
 //!         .buffer_capacity(128 * 1024)  // 128 KB buffer
 //!         .build()?;
 //!
-//!     // Use the configured reader
 //!     for record in reader {
 //!         let record = record?;
 //!         // Process record...
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -144,8 +140,8 @@
 //!
 //! If your BED file has extra columns beyond the standard format:
 //!
-//! ```rust,no_run,ignore
-//! use genepred::{Reader, Bed6, GenePred};
+//! ```rust,no_run
+//! use genepred::{Reader, Bed6};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // BED6 + 2 additional fields
@@ -156,16 +152,33 @@
 //!
 //!     for record in reader.records() {
 //!         let record = record?;
-//!         // Access standard fields
-//!         println!("Gene: {}", record.name);
+//!         let name = record.name().unwrap_or(b"<unknown>");
+//!         println!("Gene: {}", String::from_utf8_lossy(name));
 //!
-//!         // Additional fields are stored in the extras vector
-//!         if record.extras.len() >= 2 {
-//!             println!("Custom field 1: {}", record.extras[0]);
-//!             println!("Custom field 2: {}", record.extras[1]);
+//!         if let Some(field1) = record.extras().get(b"custom_field_1".as_ref()) {
+//!             println!("Custom field 1: {field1:?}");
 //!         }
 //!     }
+//!     Ok(())
+//! }
+//! ```
 //!
+//! ### Reading GTF/GFF Files
+//!
+//! Parse GTF/GFF files into `GenePred` records.
+//!
+//! ```rust,no_run
+//! use genepred::{Reader, Gtf, GenePred};
+//!
+//! fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     let mut reader = Reader::<Gtf>::from_gxf("data/annotations.gtf")?;
+//!     for record in reader.records() {
+//!         let genepred: GenePred = record?;
+//!         println!(
+//!             "GenePred: {}",
+//!             String::from_utf8_lossy(genepred.name().unwrap_or(b"<unknown>"))
+//!         );
+//!     }
 //!     Ok(())
 //! }
 //! ```
@@ -174,21 +187,23 @@
 //!
 //! Use memory mapping for extremely fast access to large files:
 //!
-//! ```rust,no_run,ignore
-//! use genepred::{Reader, Bed6, ReaderMode};
+//! ```rust,no_run
+//! use genepred::{Reader, Gff, ReaderMode, GenePred};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     // Enable the "mmap" feature in Cargo.toml
-//!     let reader = Reader::<Bed6>::builder()
-//!         .from_path("data/huge_file.bed")
+//!     let mut reader = Reader::<Gff>::builder()
+//!         .from_path("data/huge_annotations.gff")
 //!         .mode(ReaderMode::Mmap)
 //!         .build()?;
 //!
-//!     for record in reader {
-//!         let record = record?;
-//!         // Process at maximum speed...
+//!     for record in reader.records() {
+//!         let genepred: GenePred = record?;
+//!         println!(
+//!             "GenePred: {}",
+//!             String::from_utf8_lossy(genepred.name().unwrap_or(b"<unknown>"))
+//!         );
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -198,28 +213,30 @@
 //! Process records in parallel for multi-core performance:
 //!
 //! ```rust,no_run,ignore
-//! use genepred::{Reader, Bed6};
+//! // Enable the "rayon" and "mmap" features in Cargo.toml
+//! use genepred::{Reader, Gff, GenePred};
 //! use rayon::prelude::*;
 //! use std::sync::atomic::{AtomicUsize, Ordering};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Enable the "rayon" feature in Cargo.toml
-//!     let reader = Reader::<Bed6>::from_mmap("data/genes.bed")?;
-//!
+//!     let reader = Reader::<Gff>::from_mmap("data/huge_annotations.gff")?;
 //!     let counter = AtomicUsize::new(0);
 //!
 //!     if let Ok(records) = reader.par_records() {
 //!         records.for_each(|record| {
 //!             match record {
-//!                 Ok(r) => {
+//!                 Ok(genepred) => {
 //!                     // Process record in parallel
+//!                     println!(
+//!                         "GenePred: {}",
+//!                         String::from_utf8_lossy(genepred.name().unwrap_or(b"<unknown>"))
+//!                     );
 //!                     counter.fetch_add(1, Ordering::Relaxed);
 //!                 }
 //!                 Err(e) => eprintln!("Error: {}", e),
 //!             }
 //!         });
 //!     }
-//!
 //!     println!("Processed {} records", counter.load(Ordering::Relaxed));
 //!     Ok(())
 //! }
@@ -229,7 +246,7 @@
 //!
 //! Automatically handle gzip-compressed files:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed3};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -241,7 +258,6 @@
 //!         let record = record?;
 //!         println!("{:?}", record);
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -250,7 +266,7 @@
 //!
 //! Process streaming data from pipes:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed3};
 //! use std::io;
 //!
@@ -261,8 +277,8 @@
 //!     for record in reader.records() {
 //!         let record = record?;
 //!         // Process streaming records...
+//!         println!("{:?}", record);
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -271,22 +287,20 @@
 //!
 //! All BED formats can be converted to GenePred format:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed12, GenePred};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!     let mut reader = Reader::<Bed12>::from_path("data/genes.bed")?;
 //!
 //!     for record in reader.records() {
-//!         let bed12: Bed12 = record?;
-//!         let genepred: GenePred = bed12.into();
-//!
-//!         println!("Gene: {} has {} exons",
-//!             genepred.name,
-//!             genepred.exon_count
+//!         let genepred: GenePred = record?;
+//!         println!(
+//!             "Gene: {} has {} exons",
+//!             String::from_utf8_lossy(genepred.name().unwrap_or(b"<unknown>")),
+//!             genepred.exon_count()
 //!         );
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
@@ -295,7 +309,7 @@
 //!
 //! The library provides detailed error information including line numbers:
 //!
-//! ```rust,no_run,ignore
+//! ```rust,no_run
 //! use genepred::{Reader, Bed6};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -305,28 +319,28 @@
 //!         match record {
 //!             Ok(r) => {
 //!                 // Process valid record
-//!                 println!("Valid: {}", r.name);
+//!                 println!(
+//!                     "Valid: {}",
+//!                     String::from_utf8_lossy(r.name().unwrap_or(b"<unknown>"))
+//!                 );
 //!             }
 //!             Err(e) => {
 //!                 // Handle parsing errors with line numbers
-//!                 eprintln!("Error at line {}: {}",
-//!                     reader.current_line(), e);
+//!                 eprintln!("Error: {}", e);
 //!                 // Optionally continue or break
 //!             }
 //!         }
 //!     }
-//!
 //!     Ok(())
 //! }
 //! ```
 //!
 //! ## Performance Tips
 //!
-//! 1. **Use memory mapping** for large files that fit in RAM: `ReaderMode::Mmap`
-//! 2. **Increase buffer size** for streaming large files: `.buffer_capacity(256 * 1024)`
-//! 3. **Enable parallel processing** with Rayon for CPU-bound operations
-//! 4. **Avoid unnecessary allocations** by reusing record structures when possible
-//! 5. **Use compressed files** to reduce I/O bottlenecks on fast storage
+//! 1.  **Memory mapping:** Use `ReaderMode::Mmap` for large files that fit in RAM.
+//! 2.  **Buffer size:** Increase buffer size for streaming large files: `.buffer_capacity(256 * 1024)`.
+//! 3.  **Parallel processing:** Enable the `rayon` feature and use `par_records()` for multi-core performance.
+//! 4.  **Compressed files:** Use compressed files to reduce I/O bottlenecks on fast storage (enable `compression` feature).
 //!
 //! ## BED Format Reference
 //!
@@ -339,22 +353,9 @@
 //!
 //! ## Feature Flags
 //!
-//! - `compression`: Enable gzip support (adds `flate2` dependency)
-//! - `mmap`: Enable memory-mapped file support (adds `memmap2` dependency)
-//! - `rayon`: Enable parallel processing (adds `rayon` dependency)
-//!
-//! ## Thread Safety
-//!
-//! The `Reader` type is `Send` but not `Sync`. Create separate readers for each thread,
-//! or use the parallel iterator with `.par_records()` for automatic work distribution.
-//!
-//! ## Examples Repository
-//!
-//! For more examples, see the `examples/` directory in the repository:
-//! - `basic_reading.rs` - Simple file reading
-//! - `parallel_processing.rs` - Multi-threaded processing
-//! - `custom_fields.rs` - Handling non-standard BED files
-//! - `streaming.rs` - Processing stdin/pipes
+//! -   `compression`: Enable gzip support (adds `flate2` dependency)
+//! -   `mmap`: Enable memory-mapped file support (adds `memmap2` dependency)
+//! -   `rayon`: Enable parallel processing (adds `rayon` dependency)
 //!
 //! ## License
 //!

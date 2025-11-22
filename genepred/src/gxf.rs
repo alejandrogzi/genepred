@@ -493,16 +493,16 @@ impl TranscriptBuilder {
         }
 
         self.exons.sort_by_key(|interval| interval.start);
-        let mut block_sizes = Vec::with_capacity(self.exons.len());
         let mut block_starts = Vec::with_capacity(self.exons.len());
+        let mut block_ends = Vec::with_capacity(self.exons.len());
         for exon in &self.exons {
-            block_sizes.push((exon.end - exon.start) as u32);
-            block_starts.push((exon.start - span_start) as u32);
+            block_starts.push(exon.start);
+            block_ends.push(exon.end);
         }
 
         gene.set_block_count(Some(self.exons.len() as u32));
-        gene.set_block_sizes(Some(block_sizes));
         gene.set_block_starts(Some(block_starts));
+        gene.set_block_ends(Some(block_ends));
 
         if !self.cds.is_empty() {
             self.cds.sort_by_key(|interval| interval.start);

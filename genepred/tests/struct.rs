@@ -1,4 +1,4 @@
-use genepred::bed::{Bed12, Bed3, Bed4, Bed6, Rgb};
+use genepred::bed::{Bed12, Bed3, Bed4, Bed6};
 use genepred::{ExtraValue, Extras, GenePred, Strand};
 
 #[test]
@@ -12,7 +12,6 @@ fn test_genepred_from_coords() {
     assert_eq!(gene.end(), 20);
     assert_eq!(gene.extras(), &extras);
     assert!(gene.name().is_none());
-    assert!(gene.score().is_none());
 }
 
 #[test]
@@ -76,7 +75,7 @@ fn test_genepred_from_bed12() {
         strand: Strand::Forward,
         thick_start: 10,
         thick_end: 100,
-        item_rgb: Rgb(255, 0, 0),
+        item_rgb: genepred::bed::Rgb(255, 0, 0),
         block_count: 2,
         block_sizes: vec![10, 20],
         block_starts: vec![0, 30],
@@ -87,14 +86,12 @@ fn test_genepred_from_bed12() {
     assert_eq!(gene.start(), 10);
     assert_eq!(gene.end(), 100);
     assert_eq!(gene.name().unwrap(), b"geneA".as_ref());
-    assert_eq!(gene.score().unwrap(), 1000);
     assert_eq!(gene.strand().unwrap(), Strand::Forward);
     assert_eq!(gene.thick_start().unwrap(), 10);
     assert_eq!(gene.thick_end().unwrap(), 100);
-    assert_eq!(gene.item_rgb().unwrap(), Rgb(255, 0, 0));
     assert_eq!(gene.block_count().unwrap(), 2);
-    assert_eq!(gene.block_sizes().unwrap(), &[10, 20]);
-    assert_eq!(gene.block_starts().unwrap(), &[0, 30]);
+    assert_eq!(gene.block_starts().unwrap(), &[10u64, 40]);
+    assert_eq!(gene.block_ends().unwrap(), &[20u64, 60]);
 }
 
 #[test]
@@ -119,14 +116,12 @@ fn test_genepred_setters() {
     gene.set_start(5);
     gene.set_end(25);
     gene.set_name(Some(b"new_gene".to_vec()));
-    gene.set_score(Some(500));
     gene.set_strand(Some(Strand::Reverse));
     gene.set_thick_start(Some(6));
     gene.set_thick_end(Some(24));
-    gene.set_item_rgb(Some(Rgb(0, 0, 255)));
     gene.set_block_count(Some(1));
-    gene.set_block_sizes(Some(vec![19]));
-    gene.set_block_starts(Some(vec![1]));
+    gene.set_block_starts(Some(vec![5]));
+    gene.set_block_ends(Some(vec![25]));
     let mut extras_map = Extras::new();
     let extra_key = b"extra".to_vec();
     extras_map.insert(extra_key.clone(), ExtraValue::Scalar(b"new_extra".to_vec()));
@@ -136,14 +131,12 @@ fn test_genepred_setters() {
     assert_eq!(gene.start(), 5);
     assert_eq!(gene.end(), 25);
     assert_eq!(gene.name().unwrap(), b"new_gene".as_ref());
-    assert_eq!(gene.score().unwrap(), 500);
     assert_eq!(gene.strand().unwrap(), Strand::Reverse);
     assert_eq!(gene.thick_start().unwrap(), 6);
     assert_eq!(gene.thick_end().unwrap(), 24);
-    assert_eq!(gene.item_rgb().unwrap(), Rgb(0, 0, 255));
     assert_eq!(gene.block_count().unwrap(), 1);
-    assert_eq!(gene.block_sizes().unwrap(), &[19]);
-    assert_eq!(gene.block_starts().unwrap(), &[1]);
+    assert_eq!(gene.block_starts().unwrap(), &[5]);
+    assert_eq!(gene.block_ends().unwrap(), &[25]);
     assert_eq!(gene.extras(), &extras_map);
 
     gene.add_extra(extra_key.clone(), b"another_extra".to_vec());
@@ -164,15 +157,15 @@ fn test_genepred_exons() {
     // With blocks defined
     let mut gene2 = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene2.set_block_count(Some(2));
-    gene2.set_block_sizes(Some(vec![10, 20]));
-    gene2.set_block_starts(Some(vec![0, 30])); // Relative to start (10)
+    gene2.set_block_starts(Some(vec![10, 40]));
+    gene2.set_block_ends(Some(vec![20, 60])); // Absolute coordinates
     assert_eq!(gene2.exons(), vec![(10, 20), (40, 60)]);
 
     // With empty blocks
     let mut gene3 = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene3.set_block_count(Some(0));
-    gene3.set_block_sizes(Some(vec![]));
     gene3.set_block_starts(Some(vec![]));
+    gene3.set_block_ends(Some(vec![]));
     assert_eq!(gene3.exons(), vec![(10, 100)]);
 }
 
@@ -185,15 +178,15 @@ fn test_genepred_introns() {
     // With multiple exons
     let mut gene2 = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene2.set_block_count(Some(2));
-    gene2.set_block_sizes(Some(vec![10, 20]));
-    gene2.set_block_starts(Some(vec![0, 30])); // Exons: (10,20), (40,60)
+    gene2.set_block_starts(Some(vec![10, 40])); // Exons: (10,20), (40,60)
+    gene2.set_block_ends(Some(vec![20, 60]));
     assert_eq!(gene2.introns(), vec![(20, 40)]);
 
     // With more exons
     let mut gene3 = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene3.set_block_count(Some(3));
-    gene3.set_block_sizes(Some(vec![10, 10, 10]));
-    gene3.set_block_starts(Some(vec![0, 20, 40])); // Exons: (10,20), (30,40), (50,60)
+    gene3.set_block_starts(Some(vec![10, 30, 50])); // Exons: (10,20), (30,40), (50,60)
+    gene3.set_block_ends(Some(vec![20, 40, 60]));
     assert_eq!(gene3.introns(), vec![(20, 30), (40, 50)]);
 }
 
@@ -201,10 +194,8 @@ fn test_genepred_introns() {
 fn test_genepred_exonic_intronic_length() {
     let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene.set_block_count(Some(2));
-    gene.set_block_sizes(Some(vec![10, 20]));
-    gene.set_block_starts(Some(vec![0, 30])); // Exons: (10,20), (40,60)
-                                              // Exonic length: (20-10) + (60-40) = 10 + 20 = 30
-                                              // Intronic length: (40-20) = 20
+    gene.set_block_starts(Some(vec![10, 40])); // Exons: (10,20), (40,60)
+    gene.set_block_ends(Some(vec![20, 60]));
     assert_eq!(gene.exonic_length(), 30);
     assert_eq!(gene.intronic_length(), 20);
 
@@ -217,8 +208,8 @@ fn test_genepred_exonic_intronic_length() {
 fn test_genepred_coding_exons_cds_length() {
     let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene.set_block_count(Some(2));
-    gene.set_block_sizes(Some(vec![10, 20]));
-    gene.set_block_starts(Some(vec![0, 30])); // Exons: (10,20), (40,60)
+    gene.set_block_starts(Some(vec![10, 40])); // Exons: (10,20), (40,60)
+    gene.set_block_ends(Some(vec![20, 60]));
 
     // No thick regions
     assert!(gene.coding_exons().is_empty());
@@ -290,8 +281,8 @@ fn test_genepred_overlaps() {
 fn test_genepred_exon_overlaps() {
     let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene.set_block_count(Some(2));
-    gene.set_block_sizes(Some(vec![10, 20]));
-    gene.set_block_starts(Some(vec![0, 30])); // Exons: (10,20), (40,60)
+    gene.set_block_starts(Some(vec![10, 40])); // Exons: (10,20), (40,60)
+    gene.set_block_ends(Some(vec![20, 60]));
 
     // Overlaps first exon
     assert!(gene.exon_overlaps(5, 15));
@@ -313,15 +304,15 @@ fn test_genepred_exon_intron_count() {
 
     let mut gene2 = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene2.set_block_count(Some(2));
-    gene2.set_block_sizes(Some(vec![10, 20]));
-    gene2.set_block_starts(Some(vec![0, 30])); // Exons: (10,20), (40,60)
+    gene2.set_block_starts(Some(vec![10, 40])); // Exons: (10,20), (40,60)
+    gene2.set_block_ends(Some(vec![20, 60]));
     assert_eq!(gene2.exon_count(), 2);
     assert_eq!(gene2.intron_count(), 1);
 
     let mut gene3 = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene3.set_block_count(Some(0));
-    gene3.set_block_sizes(Some(vec![]));
     gene3.set_block_starts(Some(vec![]));
+    gene3.set_block_ends(Some(vec![]));
     assert_eq!(gene3.exon_count(), 1);
     assert_eq!(gene3.intron_count(), 0);
 }
@@ -329,30 +320,30 @@ fn test_genepred_exon_intron_count() {
 #[test]
 fn test_genepred_display() {
     let gene1 = GenePred::from_coords(b"chr1".to_vec(), 10, 20, Extras::new());
-    assert_eq!(format!("{}", gene1), "chr1\t10\t20");
+    assert_eq!(format!("{}", gene1), ".\tchr1\t.\t10\t20\t10\t20\t0\t\t");
 
     let mut gene2 = GenePred::from_coords(b"chr1".to_vec(), 10, 20, Extras::new());
     gene2.set_name(Some(b"geneA".to_vec()));
-    gene2.set_score(Some(100));
     gene2.set_strand(Some(Strand::Forward));
-    assert_eq!(format!("{}", gene2), "chr1\t10\t20\tgeneA\t100\t+");
+    assert_eq!(
+        format!("{}", gene2),
+        "geneA\tchr1\t+\t10\t20\t10\t20\t0\t\t"
+    );
 
     let mut gene3 = GenePred::from_coords(b"chr1".to_vec(), 10, 100, Extras::new());
     gene3.set_name(Some(b"geneB".to_vec()));
-    gene3.set_score(Some(500));
     gene3.set_strand(Some(Strand::Reverse));
     gene3.set_thick_start(Some(10));
     gene3.set_thick_end(Some(100));
-    gene3.set_item_rgb(Some(Rgb(255, 0, 0)));
     gene3.set_block_count(Some(2));
-    gene3.set_block_sizes(Some(vec![10, 20]));
-    gene3.set_block_starts(Some(vec![0, 30]));
+    gene3.set_block_starts(Some(vec![10, 40]));
+    gene3.set_block_ends(Some(vec![20, 60]));
     let mut extras = Extras::new();
     extras.insert(b"first".to_vec(), ExtraValue::Scalar(b"extra1".to_vec()));
     extras.insert(b"second".to_vec(), ExtraValue::Scalar(b"extra2".to_vec()));
     gene3.set_extras(extras);
     assert_eq!(
         format!("{}", gene3),
-        "chr1\t10\t100\tgeneB\t500\t-\t10\t100\t255,0,0\t2\t10,20\t0,30\tfirst=extra1\tsecond=extra2"
+        "geneB\tchr1\t-\t10\t100\t10\t100\t2\t10,40\t20,60\tfirst=extra1\tsecond=extra2"
     );
 }
