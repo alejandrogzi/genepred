@@ -8,7 +8,7 @@
   </h1>
 
   <p align="center">
-    <a href="https://img.shields.io/badge/version-0.1.0dev-green" target="_blank">
+    <a href="https://img.shields.io/badge/version-0.0.2-green" target="_blank">
       <img alt="Version Badge" src="https://img.shields.io/badge/version-0.1.0dev-green">
     </a>
     <a href="https://crates.io/crates/genepred" target="_blank">
