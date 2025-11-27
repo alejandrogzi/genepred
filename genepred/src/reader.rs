@@ -1,7 +1,5 @@
-use std::fmt;
-
-#[cfg(feature = "mmap")]
 use std::any::TypeId;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::marker::PhantomData;
@@ -258,44 +256,52 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
 
     /// Builds the `Reader`.
     pub fn build(mut self) -> ReaderResult<Reader<R>> {
-        if !R::SUPPORTS_STANDARD_READER {
-            return Err(ReaderError::Builder(
-                "ERROR: use `Reader::<Gtf>::from_gxf` for this format".into(),
-            ));
-        }
-
         let source = self
             .source
             .take()
             .ok_or_else(|| ReaderError::Builder("ERROR: no input source configured".into()))?;
 
         match source {
-            ReaderSource::Path(path) => match self.mode {
-                ReaderMode::Default => {
-                    let reader = self.open_path_stream(&path)?;
-                    Reader::from_stream(reader, self.additional_fields, self.buffer_capacity)
+            ReaderSource::Path(path) => {
+                if !R::SUPPORTS_STANDARD_READER {
+                    return self.build_gxf_from_path(path);
                 }
-                ReaderMode::Mmap => {
-                    #[cfg(feature = "mmap")]
-                    {
-                        return self.build_mmap(path, self.additional_fields);
+
+                match self.mode {
+                    ReaderMode::Default => {
+                        let reader = self.open_path_stream(&path)?;
+                        Reader::from_stream(reader, self.additional_fields, self.buffer_capacity)
                     }
-                    #[cfg(not(feature = "mmap"))]
-                    {
-                        Err(ReaderError::Builder(
-                            "ERROR: enable the `mmap` feature to use mmap mode".into(),
-                        ))
+                    ReaderMode::Mmap => {
+                        #[cfg(feature = "mmap")]
+                        {
+                            return self.build_mmap(path, self.additional_fields);
+                        }
+                        #[cfg(not(feature = "mmap"))]
+                        {
+                            Err(ReaderError::Builder(
+                                "ERROR: enable the `mmap` feature to use mmap mode".into(),
+                            ))
+                        }
                     }
                 }
-            },
-            ReaderSource::Reader(reader) => match self.mode {
-                ReaderMode::Default => {
-                    Reader::from_stream(reader, self.additional_fields, self.buffer_capacity)
+            }
+            ReaderSource::Reader(reader) => {
+                if !R::SUPPORTS_STANDARD_READER {
+                    return Err(ReaderError::Builder(
+                        "ERROR: this format requires a filesystem path".into(),
+                    ));
                 }
-                ReaderMode::Mmap => Err(ReaderError::Builder(
-                    "ERROR: mmap mode requires a filesystem path".into(),
-                )),
-            },
+
+                match self.mode {
+                    ReaderMode::Default => {
+                        Reader::from_stream(reader, self.additional_fields, self.buffer_capacity)
+                    }
+                    ReaderMode::Mmap => Err(ReaderError::Builder(
+                        "ERROR: mmap mode requires a filesystem path".into(),
+                    )),
+                }
+            }
         }
     }
 
@@ -343,6 +349,64 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
         } else {
             Reader::from_mmap_with_additional_fields(path, additional_fields)
         }
+    }
+
+    /// Builds a `Reader` for GXF formats (GTF/GFF) from a filesystem path.
+    fn build_gxf_from_path(&self, path: PathBuf) -> ReaderResult<Reader<R>> {
+        if self.additional_fields != 0 {
+            return Err(ReaderError::Builder(
+                "ERROR: additional fields are not supported for this format".into(),
+            ));
+        }
+
+        let options = GxfOptions::new();
+        if TypeId::of::<R>() == TypeId::of::<Gtf>() {
+            return match self.mode {
+                ReaderMode::Default => {
+                    let records = gxf::read_gxf_file::<Gtf, _>(&path, &options)?;
+                    Reader::from_preloaded_records(records)
+                }
+                ReaderMode::Mmap => {
+                    #[cfg(feature = "mmap")]
+                    {
+                        let records = gxf::read_gxf_mmap::<Gtf, _>(&path, &options)?;
+                        Reader::from_preloaded_records(records)
+                    }
+                    #[cfg(not(feature = "mmap"))]
+                    {
+                        Err(ReaderError::Builder(
+                            "ERROR: enable the `mmap` feature to use mmap mode".into(),
+                        ))
+                    }
+                }
+            };
+        }
+
+        if TypeId::of::<R>() == TypeId::of::<Gff>() {
+            return match self.mode {
+                ReaderMode::Default => {
+                    let records = gxf::read_gxf_file::<Gff, _>(&path, &options)?;
+                    Reader::from_preloaded_records(records)
+                }
+                ReaderMode::Mmap => {
+                    #[cfg(feature = "mmap")]
+                    {
+                        let records = gxf::read_gxf_mmap::<Gff, _>(&path, &options)?;
+                        Reader::from_preloaded_records(records)
+                    }
+                    #[cfg(not(feature = "mmap"))]
+                    {
+                        Err(ReaderError::Builder(
+                            "ERROR: enable the `mmap` feature to use mmap mode".into(),
+                        ))
+                    }
+                }
+            };
+        }
+
+        Err(ReaderError::Builder(
+            "ERROR: unsupported format for this reader".into(),
+        ))
     }
 }
 
@@ -532,6 +596,36 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
         })
     }
 
+    /// Creates a new `Reader` from preloaded `GenePred` records.
+    ///
+    /// This internal function is used to create readers that iterate over
+    /// a collection of already-parsed records, such as when reading GTF/GFF
+    /// files that are aggregated into `GenePred` format.
+    ///
+    /// # Arguments
+    ///
+    /// * `records` - A vector of `GenePred` records to iterate over
+    ///
+    /// # Returns
+    ///
+    /// A `ReaderResult` containing the new reader
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run,ignore
+    /// // This is an internal function used by GTF/GFF readers
+    /// // The example below shows conceptual usage
+    /// use genepred::{Reader, GenePred, Extras};
+    ///
+    /// // This would typically be called internally when reading GTF/GFF files
+    /// let records = vec![
+    ///     GenePred::from_coords(b"chr1".to_vec(), 100, 200, Extras::new()),
+    ///     GenePred::from_coords(b"chr1".to_vec(), 300, 400, Extras::new()),
+    /// ];
+    ///
+    /// // In practice, this creates a reader that iterates over preloaded records
+    /// // let mut reader = Reader::from_preloaded_records(records)?;
+    /// ```
     pub(crate) fn from_preloaded_records(records: Vec<GenePred>) -> ReaderResult<Self> {
         let mut reader = Self::from_stream(Box::new(io::empty()), 0, 1)?;
         reader.preloaded = Some(records.into_iter());
@@ -985,6 +1079,19 @@ pub struct ParallelRecords<R: BedFormat + Into<GenePred>> {
 
 #[cfg(feature = "rayon")]
 impl<R: BedFormat + Into<GenePred>> ParallelRecords<R> {
+    /// Parses a single line for parallel processing.
+    ///
+    /// This internal function is used by the parallel iterator implementation
+    /// to parse individual lines in parallel.
+    ///
+    /// # Arguments
+    ///
+    /// * `(line_number, line)` - A tuple containing the line number and line content
+    /// * `additional` - The number of additional fields to expect
+    ///
+    /// # Returns
+    ///
+    /// A `ReaderResult` containing the parsed record
     fn parse_line((line_number, line): &(usize, String), additional: usize) -> ReaderResult<R> {
         parse_line::<R>(line, additional, *line_number)
     }
