@@ -1,6 +1,6 @@
 <p align="center">
   <p align="center">
-    <img width=700 align="center" src="./assets/gp.png" >
+    <img width=100 align="center" src="./assets/gp.png" >
   </p>
 
   <h1 align="center">
