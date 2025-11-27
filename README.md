@@ -1,23 +1,46 @@
-# genepred
+<p align="center">
+  <p align="center">
+    <img width=700 align="center" src="./assets/gp.png" >
+  </p>
 
-A high-performance Rust library for reading and parsing BED (Browser Extensible Data), GTF, GFF, and GenePred format files used in bioinformatics.
+  <h1 align="center">
+    genepred
+  </h1>
+
+  <p align="center">
+    <a href="https://img.shields.io/badge/version-0.1.0dev-green" target="_blank">
+      <img alt="Version Badge" src="https://img.shields.io/badge/version-0.1.0dev-green">
+    </a>
+    <a href="https://crates.io/crates/genepred" target="_blank">
+      <img alt="Crates.io Version" src="https://img.shields.io/crates/v/genepred">
+    </a>
+    <a href="https://github.com/alejandrogzi/genepred" target="_blank">
+      <img alt="GitHub License" src="https://img.shields.io/github/license/alejandrogzi/genepred?color=blue">
+    </a>
+    <a href="https://crates.io/crates/genepred" target="_blank">
+      <img alt="Crates.io Total Downloads" src="https://img.shields.io/crates/d/genepred">
+    </a>
+  </p>
+
+
+  <p align="center">
+  a port for the GenePred format in Rust
+  </p>
+
+  <p align="center">
+    <samp>
+        <a href="https://docs.rs/genepred/0.0.2/genepred/">docs</a> .
+        <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#Usage">usage</a> .
+        <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#Features">features</a> .
+        <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#GenePred">genepred</a>
+    </samp>
+  </p>
+
+</p>
 
 ## Overview
 
 This library provides a flexible and efficient way to read genomic interval data in BED, GTF, and GFF formats, automatically converting all records to a unified `GenePred` format. It's designed for high-throughput bioinformatics applications where performance matters.
-
-## Features
-
-- **High Performance:** Optimized for speed with minimal allocations, efficient parsing, and optional memory-mapped file support
-- **Flexible Format Support:** Works with BED3, BED4, BED5, BED6, BED8, BED9, BED12, GTF, and GFF formats
-- **Unified Output:** All formats are automatically converted to `GenePred` records for consistent processing
-- **Multiple Reading Modes:**
-  - Buffered streaming for large files
-  - Memory-mapped (mmap) for ultra-fast random access
-  - Parallel processing with Rayon integration
-- **Compression Support:** Automatic detection and decompression of gzip files
-- **Type-Safe:** Leverages Rust's type system to ensure correct field parsing
-- **Builder Pattern API:** Intuitive and flexible configuration
 
 ## Quick Start
 
@@ -31,7 +54,7 @@ genepred = "0.1"
 genepred = { version = "0.1", features = ["compression", "mmap", "rayon"] }
 ```
 
-## Basic Usage
+## Usage
 
 ### Reading a BED3 File
 
@@ -106,8 +129,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
-
-## Advanced Usage
 
 ### Using the Builder Pattern
 
@@ -372,7 +393,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## Available Features and How to Use Them
+## Features
+
+- **High Performance:** Optimized for speed with minimal allocations, efficient parsing, and optional memory-mapped file support
+- **Flexible Format Support:** Works with BED3, BED4, BED5, BED6, BED8, BED9, BED12, GTF, and GFF formats
+- **Unified Output:** All formats are automatically converted to `GenePred` records for consistent processing
+- **Multiple Reading Modes:**
+  - Buffered streaming for large files
+  - Memory-mapped (mmap) for ultra-fast random access
+  - Parallel processing with Rayon integration
+- **Compression Support:** Automatic detection and decompression of gzip files
+- **Type-Safe:** Leverages Rust's type system to ensure correct field parsing
+- **Builder Pattern API:** Intuitive and flexible configuration
 
 ### Feature Flags
 
@@ -382,6 +414,10 @@ Add these to your `Cargo.toml` to enable optional functionality:
 [dependencies]
 genepred = { version = "0.1", features = ["compression", "mmap", "rayon"] }
 ```
+
+- `compression`: Enable gzip support (adds `flate2` dependency)
+- `mmap`: Enable memory-mapped file support (adds `memmap2` dependency)
+- `rayon`: Enable parallel processing (adds `rayon` dependency)
 
 ### Compression Support (`compression` feature)
 
@@ -408,7 +444,7 @@ genepred = { version = "0.1", features = ["compression", "mmap", "rayon"] }
 - **Works with:** All readers (buffered and memory-mapped)
 - **Example:** See "Parallel Processing with Rayon" section above
 
-## GenePred Unified Format
+## GenePred
 
 **Important:** All BED, GTF, and GFF records are automatically converted to `GenePred` format.
 This means you always work with the same `GenePred` structure regardless of input format:
@@ -442,36 +478,6 @@ fn process_any_format() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-## Error Handling
-
-The library provides detailed error information including line numbers:
-
-```rust,no_run
-use genepred::{Reader, Bed6};
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut reader = Reader::<Bed6>::from_path("data/genes.bed")?;
-
-    for record in reader.records() {
-        match record {
-            Ok(r) => {
-                // Process valid record
-                println!(
-                    "Valid: {}",
-                    String::from_utf8_lossy(&r.name.unwrap_or(b"<unknown>".to_vec()))
-                );
-            }
-            Err(e) => {
-                // Handle parsing errors with line numbers
-                eprintln!("Error: {}", e);
-                // Optionally continue or break
-            }
-        }
-    }
-    Ok(())
-}
-```
-
 ## Performance Tips
 
 1. **Memory mapping:** Use `ReaderMode::Mmap` for large files that fit in RAM.
@@ -498,12 +504,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **GTF:** Gene Transfer Format, uses space-separated attributes, groups by `transcript_id`
 - **GFF:** General Feature Format, uses equals-separated attributes, groups by `ID`
 - **Both:** Automatically aggregated into GenePred records with exon structures
-
-## Feature Flags
-
-- `compression`: Enable gzip support (adds `flate2` dependency)
-- `mmap`: Enable memory-mapped file support (adds `memmap2` dependency)
-- `rayon`: Enable parallel processing (adds `rayon` dependency)
 
 ## License
 
