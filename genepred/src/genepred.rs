@@ -105,7 +105,10 @@ impl ExtraValue {
         }
     }
 
-    /// Returns an iterator over the stored values as byte slices.
+    /// Returns an iterator over the values in this `ExtraValue`.
+    ///
+    /// For scalar values, this returns an iterator with a single item.
+    /// For array values, this returns an iterator over all items in the array.
     ///
     /// # Example
     ///
@@ -113,15 +116,12 @@ impl ExtraValue {
     /// use genepred::genepred::ExtraValue;
     ///
     /// let scalar = ExtraValue::Scalar(b"value1".to_vec());
-    /// let mut iter = scalar.iter();
-    /// assert_eq!(iter.next(), Some(&b"value1"[..]));
-    /// assert_eq!(iter.next(), None);
+    /// let values: Vec<&[u8]> = scalar.iter().collect();
+    /// assert_eq!(values, vec![b"value1"]);
     ///
     /// let array = ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]);
-    /// let mut iter = array.iter();
-    /// assert_eq!(iter.next(), Some(&b"value1"[..]));
-    /// assert_eq!(iter.next(), Some(&b"value2"[..]));
-    /// assert_eq!(iter.next(), None);
+    /// let values: Vec<&[u8]> = array.iter().collect();
+    /// assert_eq!(values, vec![b"value1", b"value2"]);
     /// ```
     pub fn iter(&self) -> ExtraValueIter<'_> {
         match self {
