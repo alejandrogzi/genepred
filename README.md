@@ -3,9 +3,11 @@
     <img width=200 align="center" src="./assets/gp.png" >
   </p>
 
-  <h1 align="center">
-    genepred
-  </h1>
+  <span>
+    <h1 align="center">
+        genepred
+    </h1>
+  </span>
 
   <p align="center">
     <a href="https://img.shields.io/badge/version-0.0.2-green" target="_blank">
@@ -22,17 +24,15 @@
     </a>
   </p>
 
-
-  <p align="center">
-  a port for the GenePred format in Rust
-  </p>
-
   <p align="center">
     <samp>
+        <span> a port for the GenePred format in Rust</span>
+        <br>
+        <br>
         <a href="https://docs.rs/genepred/0.0.2/genepred/">docs</a> .
         <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#Usage">usage</a> .
         <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#Features">features</a> .
-        <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#GenePred">genepred</a>
+        <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#GenePred">format</a>
     </samp>
   </p>
 
