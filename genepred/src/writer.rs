@@ -62,6 +62,36 @@ pub struct Writer<F> {
     _marker: PhantomData<F>,
 }
 
+/// Configuration for writer behaviour.
+#[derive(Debug, Clone, Copy)]
+pub struct WriterOptions {
+    /// Whether to emit non-numeric extra fields when writing BED outputs.
+    /// Numeric extras (those with numeric keys) are always written.
+    pub include_non_numeric_extras: bool,
+}
+
+#[allow(clippy::derivable_impls)]
+impl Default for WriterOptions {
+    fn default() -> Self {
+        Self {
+            include_non_numeric_extras: false,
+        }
+    }
+}
+
+impl WriterOptions {
+    /// Creates a new options builder with defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Controls whether non-numeric extras are emitted for BED outputs.
+    pub fn include_non_numeric_extras(mut self, include: bool) -> Self {
+        self.include_non_numeric_extras = include;
+        self
+    }
+}
+
 impl<F> Writer<F>
 where
     F: TargetFormat,
@@ -71,13 +101,31 @@ where
     /// The `record` argument is consumed to avoid unnecessary cloning of large
     /// payloads, but the implementation only borrows the data while writing.
     pub fn from_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        F::write_record(record, writer)
+        F::write_record_with_options(record, writer, &WriterOptions::default())
+    }
+
+    /// Writes a single `GenePred` with the provided writer options.
+    pub fn from_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        F::write_record_with_options(record, writer, options)
     }
 
     /// Writes all provided `GenePred`s into the target format.
     pub fn from_records<W: Write>(records: &[GenePred], writer: &mut W) -> WriterResult<()> {
+        Self::from_records_with_options(records, writer, &WriterOptions::default())
+    }
+
+    /// Writes all provided `GenePred`s into the target format using options.
+    pub fn from_records_with_options<W: Write>(
+        records: &[GenePred],
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
         for record in records {
-            F::write_record(record, writer)?;
+            F::write_record_with_options(record, writer, options)?;
         }
         Ok(())
     }
@@ -85,6 +133,15 @@ where
     /// Opens a path and writes all records, auto-detecting gzip output from
     /// the `.gz` extension when the `compression` feature is enabled.
     pub fn to_path<P: AsRef<Path>>(path: P, records: &[GenePred]) -> WriterResult<()> {
+        Self::to_path_with_options(path, records, &WriterOptions::default())
+    }
+
+    /// Opens a path and writes all records with writer options.
+    pub fn to_path_with_options<P: AsRef<Path>>(
+        path: P,
+        records: &[GenePred],
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
         let path = path.as_ref();
         let file = std::fs::File::create(path)?;
 
@@ -106,7 +163,7 @@ where
         };
 
         let mut writer = BufWriter::with_capacity(64 * 1024, sink);
-        Self::from_records(records, &mut writer)?;
+        Self::from_records_with_options(records, &mut writer, options)?;
         writer.flush()?;
         Ok(())
     }
@@ -115,68 +172,148 @@ where
 /// Trait implemented by all supported output formats.
 pub trait TargetFormat {
     /// Writes a single `GenePred` record to the writer in the target format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()>;
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()>;
+
+    /// Writes a record with default options.
+    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
+        Self::write_record_with_options(record, writer, &WriterOptions::default())
+    }
 }
 
 impl TargetFormat for Bed3 {
     /// Writes a `GenePred` record in BED3 format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        write_bed_core(record, writer, BedFields::Bed3)
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        write_bed_core(
+            record,
+            writer,
+            BedFields::Bed3,
+            options.include_non_numeric_extras,
+        )
     }
 }
 
 impl TargetFormat for Bed4 {
     /// Writes a `GenePred` record in BED4 format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        write_bed_core(record, writer, BedFields::Bed4)
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        write_bed_core(
+            record,
+            writer,
+            BedFields::Bed4,
+            options.include_non_numeric_extras,
+        )
     }
 }
 
 impl TargetFormat for Bed5 {
     /// Writes a `GenePred` record in BED5 format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        write_bed_core(record, writer, BedFields::Bed5)
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        write_bed_core(
+            record,
+            writer,
+            BedFields::Bed5,
+            options.include_non_numeric_extras,
+        )
     }
 }
 
 impl TargetFormat for Bed6 {
     /// Writes a `GenePred` record in BED6 format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        write_bed_core(record, writer, BedFields::Bed6)
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        write_bed_core(
+            record,
+            writer,
+            BedFields::Bed6,
+            options.include_non_numeric_extras,
+        )
     }
 }
 
 impl TargetFormat for Bed8 {
     /// Writes a `GenePred` record in BED8 format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        write_bed_core(record, writer, BedFields::Bed8)
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        write_bed_core(
+            record,
+            writer,
+            BedFields::Bed8,
+            options.include_non_numeric_extras,
+        )
     }
 }
 
 impl TargetFormat for Bed9 {
     /// Writes a `GenePred` record in BED9 format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        write_bed_core(record, writer, BedFields::Bed9)
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        write_bed_core(
+            record,
+            writer,
+            BedFields::Bed9,
+            options.include_non_numeric_extras,
+        )
     }
 }
 
 impl TargetFormat for Bed12 {
     /// Writes a `GenePred` record in BED12 format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
-        write_bed_core(record, writer, BedFields::Bed12)
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        options: &WriterOptions,
+    ) -> WriterResult<()> {
+        write_bed_core(
+            record,
+            writer,
+            BedFields::Bed12,
+            options.include_non_numeric_extras,
+        )
     }
 }
 
 impl TargetFormat for crate::gxf::Gtf {
     /// Writes a `GenePred` record in GTF format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        _options: &WriterOptions,
+    ) -> WriterResult<()> {
         write_gxf(record, writer, GxfKind::Gtf)
     }
 }
 
 impl TargetFormat for crate::gxf::Gff {
     /// Writes a `GenePred` record in GFF format.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
+    fn write_record_with_options<W: Write>(
+        record: &GenePred,
+        writer: &mut W,
+        _options: &WriterOptions,
+    ) -> WriterResult<()> {
         write_gxf(record, writer, GxfKind::Gff)
     }
 }
@@ -200,6 +337,7 @@ fn write_bed_core<W: Write>(
     record: &GenePred,
     writer: &mut W,
     kind: BedFields,
+    include_non_numeric_extras: bool,
 ) -> WriterResult<()> {
     if record.chrom.is_empty() {
         return Err(WriterError::MissingField("chrom"));
@@ -213,7 +351,7 @@ fn write_bed_core<W: Write>(
 
     match kind {
         BedFields::Bed3 => {
-            write_bed_extras(writer, &record.extras)?;
+            write_bed_extras(writer, &record.extras, include_non_numeric_extras)?;
             return Ok(());
         }
         BedFields::Bed4
@@ -297,7 +435,7 @@ fn write_bed_core<W: Write>(
         writer.write_all(b",")?;
     }
 
-    write_bed_extras(writer, &record.extras)?;
+    write_bed_extras(writer, &record.extras, include_non_numeric_extras)?;
     Ok(())
 }
 
@@ -335,7 +473,11 @@ fn derive_exons(record: &GenePred) -> Vec<(u64, u64)> {
 /// Numeric keys are written first in sorted order, followed by non-numeric
 /// keys in alphabetical order. Numeric keys are written as bare values,
 /// while non-numeric keys are written as key=value pairs.
-fn write_bed_extras<W: Write>(writer: &mut W, extras: &Extras) -> WriterResult<()> {
+fn write_bed_extras<W: Write>(
+    writer: &mut W,
+    extras: &Extras,
+    include_non_numeric: bool,
+) -> WriterResult<()> {
     if extras.is_empty() {
         writer.write_all(b"\n")?;
         return Ok(());
@@ -351,7 +493,9 @@ fn write_bed_extras<W: Write>(writer: &mut W, extras: &Extras) -> WriterResult<(
                 continue;
             }
         }
-        non_numeric.push((key.as_slice(), value));
+        if include_non_numeric {
+            non_numeric.push((key.as_slice(), value));
+        }
     }
 
     numeric.sort_by_key(|(idx, _)| *idx);
@@ -672,16 +816,15 @@ fn build_attributes(record: &GenePred, is_gtf: bool) -> Vec<(Vec<u8>, Vec<u8>)> 
         .map(|v| v.to_vec())
         .unwrap_or_else(|| transcript.clone());
 
-    let mut pairs = Vec::with_capacity(record.extras.len() + 2);
-    if is_gtf {
-        pairs.push((b"gene_id".to_vec(), gene_id.clone()));
-        pairs.push((b"transcript_id".to_vec(), transcript.clone()));
-    } else {
+    let mut pairs = Vec::with_capacity(record.extras.len() + 3);
+    // gene_id and transcript_id always first for deterministic output
+    pairs.push((b"gene_id".to_vec(), gene_id.clone()));
+    pairs.push((b"transcript_id".to_vec(), transcript.clone()));
+    if !is_gtf {
         pairs.push((b"ID".to_vec(), transcript.clone()));
-        pairs.push((b"gene_id".to_vec(), gene_id.clone()));
-        pairs.push((b"transcript_id".to_vec(), transcript));
     }
 
+    let mut rest: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(record.extras.len());
     for (key, value) in &record.extras {
         if is_gtf && (key.as_slice() == b"gene_id" || key.as_slice() == b"transcript_id") {
             continue;
@@ -690,10 +833,11 @@ fn build_attributes(record: &GenePred, is_gtf: bool) -> Vec<(Vec<u8>, Vec<u8>)> 
             continue;
         }
         let rendered = render_value(value);
-        pairs.push((key.clone(), rendered));
+        rest.push((key.clone(), rendered));
     }
 
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    rest.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs.extend(rest);
     pairs
 }
 

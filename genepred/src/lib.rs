@@ -529,4 +529,4 @@ pub use genepred::{ExtraValue, Extras, GenePred};
 pub use gxf::{Gff, Gtf, GxfOptions};
 pub use reader::{Reader, ReaderBuilder, ReaderMode, ReaderResult};
 pub use strand::Strand;
-pub use writer::{Writer, WriterError, WriterResult};
+pub use writer::{Writer, WriterError, WriterOptions, WriterResult};

@@ -504,28 +504,38 @@ impl TranscriptBuilder {
         gene.set_block_starts(Some(block_starts));
         gene.set_block_ends(Some(block_ends));
 
+        let mut coding_bounds: Option<(u64, u64)> = None;
+
         if !self.cds.is_empty() {
             self.cds.sort_by_key(|interval| interval.start);
             let cds_start = self.cds.first().map(|interval| interval.start).unwrap();
             let cds_end = self.cds.last().map(|interval| interval.end).unwrap();
-            gene.set_thick_start(Some(cds_start));
-            gene.set_thick_end(Some(cds_end));
-        } else if !(self.start_codons.is_empty() && self.stop_codons.is_empty()) {
-            let cds_start = self
+            coding_bounds = Some((cds_start, cds_end));
+        }
+
+        if !(self.start_codons.is_empty() && self.stop_codons.is_empty()) {
+            let codon_start = self
                 .start_codons
                 .iter()
                 .map(|interval| interval.start)
-                .min()
-                .unwrap_or(span_start);
-            let cds_end = self
-                .stop_codons
-                .iter()
-                .map(|interval| interval.end)
-                .max()
-                .unwrap_or(span_end);
-            if cds_start < cds_end {
-                gene.set_thick_start(Some(cds_start));
-                gene.set_thick_end(Some(cds_end));
+                .min();
+            let codon_end = self.stop_codons.iter().map(|interval| interval.end).max();
+
+            coding_bounds = match (coding_bounds, codon_start, codon_end) {
+                (Some((cs, ce)), Some(s), Some(e)) => Some((cs.min(s), ce.max(e))),
+                (Some((cs, ce)), Some(s), None) => Some((cs.min(s), ce)),
+                (Some((cs, ce)), None, Some(e)) => Some((cs, ce.max(e))),
+                (Some(bounds), None, None) => Some(bounds),
+                (None, Some(s), Some(e)) if s < e => Some((s, e)),
+                (None, Some(_), Some(_)) => None,
+                (None, Some(_), None) | (None, None, Some(_)) | (None, None, None) => None,
+            };
+        }
+
+        if let Some((start, end)) = coding_bounds {
+            if start < end {
+                gene.set_thick_start(Some(start));
+                gene.set_thick_end(Some(end));
             }
         }
 

@@ -1,0 +1,7 @@
+chrC	source	transcript	51	250	.	+	.	gene_id "gC"; transcript_id "txC";
+chrC	source	exon	51	150	.	+	.	gene_id "gC"; transcript_id "txC";
+chrC	source	exon	180	250	.	+	.	gene_id "gC"; transcript_id "txC";
+chrC	source	CDS	73	150	.	+	0	gene_id "gC"; transcript_id "txC";
+chrC	source	CDS	180	197	.	+	0	gene_id "gC"; transcript_id "txC";
+chrC	source	start_codon	70	72	.	+	.	gene_id "gC"; transcript_id "txC";
+chrC	source	stop_codon	198	200	.	+	.	gene_id "gC"; transcript_id "txC";
