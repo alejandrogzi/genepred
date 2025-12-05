@@ -30,8 +30,14 @@ fn write_gtf_from_genepred() {
     assert!(lines[1].starts_with("chr1\tgenepred\texon\t100\t150\t.\t+\t.\t"));
     assert!(lines[2].starts_with("chr1\tgenepred\texon\t170\t200\t.\t+\t.\t"));
 
-    let cds_first = lines.iter().find(|l| l.contains("\tCDS\t120\t150")).unwrap();
-    let cds_second = lines.iter().find(|l| l.contains("\tCDS\t170\t180")).unwrap();
+    let cds_first = lines
+        .iter()
+        .find(|l| l.contains("\tCDS\t120\t150"))
+        .unwrap();
+    let cds_second = lines
+        .iter()
+        .find(|l| l.contains("\tCDS\t170\t180"))
+        .unwrap();
     assert!(cds_first.ends_with("\tgene_id \"tx1\"; tag \"a,b\"; transcript_id \"tx1\";"));
     assert!(cds_first.contains("\t+\t0\t"));
     assert!(cds_second.contains("\t+\t2\t"));
@@ -59,16 +65,10 @@ fn write_gff_reverse_strand_with_phases() {
     let lines: Vec<&str> = text.trim_end().split('\n').collect();
     assert_eq!(lines.len(), 7);
 
-    let cds_early = lines
-        .iter()
-        .find(|l| l.contains("\tCDS\t11\t20"))
-        .unwrap();
+    let cds_early = lines.iter().find(|l| l.contains("\tCDS\t11\t20")).unwrap();
     assert!(cds_early.contains("\t-\t2\t"));
 
-    let cds_late = lines
-        .iter()
-        .find(|l| l.contains("\tCDS\t41\t80"))
-        .unwrap();
+    let cds_late = lines.iter().find(|l| l.contains("\tCDS\t41\t80")).unwrap();
     assert!(cds_late.contains("\t-\t0\t"));
 
     let start_codon = lines.iter().find(|l| l.contains("start_codon")).unwrap();

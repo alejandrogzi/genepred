@@ -771,6 +771,7 @@ fn render_gff_attributes(pairs: &mut [(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 /// Writes a complete feature line with all required columns:
 /// seqid, source, type, start, end, score, strand, phase, attributes.
 /// Coordinates are 1-based as required by GTF/GFF standards.
+#[allow(clippy::too_many_arguments)]
 fn write_gxf_feature<W: Write>(
     writer: &mut W,
     chrom: &[u8],
