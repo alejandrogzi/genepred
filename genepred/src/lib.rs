@@ -522,9 +522,11 @@ pub mod genepred;
 pub mod gxf;
 pub mod reader;
 pub mod strand;
+pub mod writer;
 
 pub use bed::*;
 pub use genepred::{ExtraValue, Extras, GenePred};
 pub use gxf::{Gff, Gtf, GxfOptions};
 pub use reader::{Reader, ReaderBuilder, ReaderMode, ReaderResult};
 pub use strand::Strand;
+pub use writer::{Writer, WriterError, WriterResult};
