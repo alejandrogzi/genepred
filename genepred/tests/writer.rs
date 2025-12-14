@@ -3,6 +3,8 @@ use genepred::{
     strand::Strand,
     Bed12, Bed3, Gff, Gtf, Reader, Writer, WriterOptions,
 };
+#[cfg(any(feature = "bz2", feature = "zstd"))]
+use tempfile::tempdir;
 
 #[test]
 fn write_gtf_from_genepred() {
@@ -165,4 +167,38 @@ fn gtf_to_bed_includes_codons_in_cds_bounds() {
     let fields: Vec<&str> = text.trim_end().split('\t').collect();
     assert_eq!(fields[6], "69");
     assert_eq!(fields[7], "200");
+}
+
+#[cfg(feature = "zstd")]
+#[test]
+fn write_bed3_zst_roundtrip() {
+    let mut reader: Reader<Bed3> = Reader::from_path("tests/data/bed3.bed").unwrap();
+    let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("roundtrip.bed.zst");
+    Writer::<Bed3>::to_path(&path, &records).unwrap();
+
+    let mut rereader: Reader<Bed3> = Reader::from_path(&path).unwrap();
+    let rerecords: Vec<_> = rereader.records().map(|r| r.unwrap()).collect();
+    assert_eq!(rerecords.len(), 2);
+    assert_eq!(rerecords[0].start(), 0);
+    assert_eq!(rerecords[1].end(), 200);
+}
+
+#[cfg(feature = "bz2")]
+#[test]
+fn write_bed3_bz2_roundtrip() {
+    let mut reader: Reader<Bed3> = Reader::from_path("tests/data/bed3.bed").unwrap();
+    let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("roundtrip.bed.bz2");
+    Writer::<Bed3>::to_path(&path, &records).unwrap();
+
+    let mut rereader: Reader<Bed3> = Reader::from_path(&path).unwrap();
+    let rerecords: Vec<_> = rereader.records().map(|r| r.unwrap()).collect();
+    assert_eq!(rerecords.len(), 2);
+    assert_eq!(rerecords[0].start(), 0);
+    assert_eq!(rerecords[1].end(), 200);
 }

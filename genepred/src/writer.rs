@@ -3,13 +3,21 @@ use std::io::{self, BufWriter, Write};
 use std::marker::PhantomData;
 use std::path::Path;
 
-#[cfg(feature = "compression")]
+#[cfg(feature = "bz2")]
+use bzip2::write::BzEncoder;
+#[cfg(feature = "bz2")]
+use bzip2::Compression as BzCompression;
+#[cfg(feature = "gzip")]
 use flate2::write::GzEncoder;
-#[cfg(feature = "compression")]
+#[cfg(feature = "gzip")]
 use flate2::Compression as GzCompression;
+#[cfg(feature = "zstd")]
+use zstd::stream::write::Encoder as ZstdEncoder;
 
 use crate::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, Rgb};
 use crate::genepred::{ExtraValue, Extras, GenePred};
+#[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+use crate::reader::Compression;
 use crate::strand::Strand;
 
 /// Result alias for writer operations.
@@ -92,6 +100,31 @@ impl WriterOptions {
     }
 }
 
+#[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+/// Returns the compression format of the input file.
+///
+/// # Example
+///
+/// ```rust,no_run,ignore
+/// use genepred::{Reader, Bed3};
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let reader = Reader::from_path("tests/data/simple.bed.gz")?;
+///     let compression = reader.compression();
+///     assert_eq!(compression, Compression::Gzip);
+///     Ok(())
+/// }
+/// ```
+fn compression_from_extension(path: &Path) -> Compression {
+    let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    match ext {
+        "gz" => Compression::Gzip,
+        "zst" | "zstd" => Compression::Zstd,
+        "bz2" | "bzip2" => Compression::Bzip2,
+        _ => Compression::None,
+    }
+}
+
 impl<F> Writer<F>
 where
     F: TargetFormat,
@@ -130,8 +163,9 @@ where
         Ok(())
     }
 
-    /// Opens a path and writes all records, auto-detecting gzip output from
-    /// the `.gz` extension when the `compression` feature is enabled.
+    /// Opens a path and writes all records, auto-detecting compression from
+    /// common extensions (e.g., `.gz`, `.zst`, `.bz2`) when the matching
+    /// feature is enabled.
     pub fn to_path<P: AsRef<Path>>(path: P, records: &[GenePred]) -> WriterResult<()> {
         Self::to_path_with_options(path, records, &WriterOptions::default())
     }
@@ -145,18 +179,57 @@ where
         let path = path.as_ref();
         let file = std::fs::File::create(path)?;
 
-        #[cfg(feature = "compression")]
-        let sink: Box<dyn Write> = if path.extension().is_some_and(|ext| ext == "gz") {
-            Box::new(GzEncoder::new(file, GzCompression::fast()))
-        } else {
-            Box::new(file)
+        #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+        let sink: Box<dyn Write> = match compression_from_extension(path) {
+            Compression::Gzip => {
+                #[cfg(feature = "gzip")]
+                {
+                    Box::new(GzEncoder::new(file, GzCompression::fast()))
+                }
+                #[cfg(not(feature = "gzip"))]
+                {
+                    return Err(WriterError::Unsupported(
+                        "enable the `gzip` feature to write .gz outputs".into(),
+                    ));
+                }
+            }
+            Compression::Zstd => {
+                #[cfg(feature = "zstd")]
+                {
+                    let encoder = ZstdEncoder::new(file, 0).map_err(|err| {
+                        WriterError::Io(io::Error::new(io::ErrorKind::Other, err))
+                    })?;
+                    Box::new(encoder.auto_finish())
+                }
+                #[cfg(not(feature = "zstd"))]
+                {
+                    return Err(WriterError::Unsupported(
+                        "enable the `zstd` feature to write .zst outputs".into(),
+                    ));
+                }
+            }
+            Compression::Bzip2 => {
+                #[cfg(feature = "bz2")]
+                {
+                    Box::new(BzEncoder::new(file, BzCompression::fast()))
+                }
+                #[cfg(not(feature = "bz2"))]
+                {
+                    return Err(WriterError::Unsupported(
+                        "enable the `bz2` feature to write .bz2 outputs".into(),
+                    ));
+                }
+            }
+            Compression::None | Compression::Auto => Box::new(file),
         };
 
-        #[cfg(not(feature = "compression"))]
+        #[cfg(not(any(feature = "gzip", feature = "zstd", feature = "bz2")))]
         let sink: Box<dyn Write> = {
-            if path.extension().is_some_and(|ext| ext == "gz") {
+            if path.extension().is_some_and(|ext| {
+                matches!(ext.to_str(), Some("gz" | "zst" | "zstd" | "bz2" | "bzip2"))
+            }) {
                 return Err(WriterError::Unsupported(
-                    "enable the `compression` feature to write gzip outputs".into(),
+                    "enable compression features to write compressed outputs".into(),
                 ));
             }
             Box::new(file)

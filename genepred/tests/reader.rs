@@ -1,5 +1,17 @@
+#[cfg(feature = "bz2")]
+use bzip2::write::BzEncoder;
+#[cfg(feature = "bz2")]
+use bzip2::Compression as BzCompression;
 use genepred::reader::Reader;
 use genepred::{Bed12, Bed3, Bed4, Bed6, ExtraValue, Gff, Gtf, Strand};
+#[cfg(any(feature = "bz2", feature = "zstd"))]
+use std::fs::File;
+#[cfg(any(feature = "bz2", feature = "zstd"))]
+use std::io::Write;
+#[cfg(any(feature = "bz2", feature = "zstd"))]
+use tempfile::tempdir;
+#[cfg(feature = "zstd")]
+use zstd::stream::write::Encoder as ZstdEncoder;
 
 #[test]
 fn test_reader_from_string_bed3() {
@@ -215,7 +227,7 @@ fn test_reader_gff_from_path() {
     assert_eq!(gene.thick_end().unwrap(), 180);
 }
 
-#[cfg(feature = "compression")]
+#[cfg(feature = "gzip")]
 #[test]
 fn test_reader_bed3_gz_from_path() {
     let path = "tests/data/bed3.bed.gz";
@@ -226,11 +238,48 @@ fn test_reader_bed3_gz_from_path() {
     assert_eq!(records[1].end(), 200);
 }
 
-#[cfg(feature = "compression")]
+#[cfg(feature = "gzip")]
 #[test]
 fn test_reader_gtf_gz_from_path() {
     let path = "tests/data/simple.gtf.gz";
     let mut reader: Reader<Gtf> = Reader::from_path(path).unwrap();
+    let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
+    assert_eq!(records.len(), 1);
+    let gene = &records[0];
+    assert_eq!(gene.name().unwrap(), b"GeneOne".as_ref());
+    assert_eq!(gene.block_count().unwrap(), 2);
+}
+
+#[cfg(feature = "zstd")]
+#[test]
+fn test_reader_bed3_zst_from_path() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("bed3.bed.zst");
+    let data = std::fs::read("tests/data/bed3.bed").unwrap();
+
+    let mut encoder = ZstdEncoder::new(File::create(&path).unwrap(), 0).unwrap();
+    encoder.write_all(&data).unwrap();
+    encoder.finish().unwrap();
+
+    let mut reader: Reader<Bed3> = Reader::from_path(&path).unwrap();
+    let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].end(), 100);
+    assert_eq!(records[1].start(), 150);
+}
+
+#[cfg(feature = "bz2")]
+#[test]
+fn test_reader_gtf_bz2_from_path() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("simple.gtf.bz2");
+    let data = std::fs::read("tests/data/simple.gtf").unwrap();
+
+    let mut encoder = BzEncoder::new(File::create(&path).unwrap(), BzCompression::fast());
+    encoder.write_all(&data).unwrap();
+    encoder.finish().unwrap();
+
+    let mut reader: Reader<Gtf> = Reader::from_path(&path).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
     assert_eq!(records.len(), 1);
     let gene = &records[0];

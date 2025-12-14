@@ -20,7 +20,7 @@
 //!   - Buffered streaming for large files
 //!   - Memory-mapped (mmap) for ultra-fast random access
 //!   - Parallel processing with Rayon integration
-//! - **Compression Support:** Automatic detection and decompression of gzip files
+//! - **Compression Support:** Automatic detection and decompression of gzip/zstd/bzip2 files when enabled
 //! - **Type-Safe:** Leverages Rust's type system to ensure correct field parsing
 //! - **Builder Pattern API:** Intuitive and flexible configuration
 //!
@@ -30,10 +30,10 @@
 //!
 //! ```toml
 //! [dependencies]
-//! genepred = "0.1"
+//! genepred = "0.0.2"
 //!
 //! # Optional features
-//! genepred = { version = "0.1", features = ["compression", "mmap", "rayon"] }
+//! genepred = { version = "0.0.2", features = ["gzip", "zstd", "bz2", "mmap", "rayon"] }
 //! ```
 //!
 //! ## Basic Usage
@@ -339,14 +339,14 @@
 //!
 //! ### Reading Compressed Files
 //!
-//! Automatically handle gzip-compressed files:
+//! Automatically handle gzip/zstd/bzip2-compressed files:
 //!
 //! ```rust,no_run
 //! use genepred::{Reader, Bed3};
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     // Enable the "compression" feature in Cargo.toml
-//!     // Compression is auto-detected from .gz extension
+//!     // Enable the "gzip" feature in Cargo.toml (or "zstd"/"bz2" for those formats)
+//!     // Compression is auto-detected from the file extension
 //!     let mut reader = Reader::<Bed3>::from_path("data/regions.bed.gz")?;
 //!
 //!     for record in reader.records() {
@@ -386,14 +386,14 @@
 //!
 //! ```toml
 //! [dependencies]
-//! genepred = { version = "0.1", features = ["compression", "mmap", "rayon"] }
+//! genepred = { version = "0.1", features = ["gzip", "zstd", "bz2", "mmap", "rayon"] }
 //! ```
 //!
-//! ### Compression Support (`compression` feature)
+//! ### Compression Support (`gzip`, `zstd`, `bz2` features)
 //!
-//! - **What it does:** Automatically detects and decompresses `.gz` files
-//! - **How to use:** No changes needed - just enable the feature and use `.gz` files
-//! - **Example:** `Reader::<Bed3>::from_path("data.bed.gz")`
+//! - **What it does:** Automatically detects and decompresses `.gz`, `.zst`/`.zstd`, and `.bz2`/`.bzip2` files
+//! - **How to use:** Enable the matching feature for the compression format you want to read or write
+//! - **Example:** `Reader::<Bed3>::from_path("data.bed.zst")`
 //!
 //! ### Memory Mapping (`mmap` feature)
 //!
@@ -483,7 +483,7 @@
 //! 1.  **Memory mapping:** Use `ReaderMode::Mmap` for large files that fit in RAM.
 //! 2.  **Buffer size:** Increase buffer size for streaming large files: `.buffer_capacity(256 * 1024)`.
 //! 3.  **Parallel processing:** Enable the `rayon` feature and use `par_records()` for multi-core performance.
-//! 4.  **Compressed files:** Use compressed files to reduce I/O bottlenecks on fast storage (enable `compression` feature).
+//! 4.  **Compressed files:** Use compressed files to reduce I/O bottlenecks on fast storage (enable `gzip`, `zstd`, or `bz2` features).
 //!
 //! ## Format Reference
 //!
@@ -507,7 +507,9 @@
 //!
 //! ## Feature Flags
 //!
-//! -   `compression`: Enable gzip support (adds `flate2` dependency)
+//! -   `gzip`: Enable gzip support (adds `flate2` dependency)
+//! -   `zstd`: Enable zstd support (adds `zstd` dependency)
+//! -   `bz2`: Enable bzip2 support (adds `bzip2` dependency)
 //! -   `mmap`: Enable memory-mapped file support (adds `memmap2` dependency)
 //! -   `rayon`: Enable parallel processing (adds `rayon` dependency)
 //!

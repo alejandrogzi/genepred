@@ -5,7 +5,9 @@ use std::io::{self, BufRead, BufReader, Read};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-#[cfg(feature = "compression")]
+#[cfg(feature = "bz2")]
+use bzip2::read::BzDecoder;
+#[cfg(feature = "gzip")]
 use flate2::read::MultiGzDecoder;
 #[cfg(feature = "mmap")]
 use memmap2::MmapOptions;
@@ -13,6 +15,8 @@ use memmap2::MmapOptions;
 use rayon::prelude::*;
 #[cfg(feature = "mmap")]
 use std::sync::Arc;
+#[cfg(feature = "zstd")]
+use zstd::stream::read::Decoder as ZstdDecoder;
 
 use crate::{
     bed::BedFormat,
@@ -147,7 +151,7 @@ pub enum ReaderMode {
 }
 
 /// The compression format of the input file.
-#[cfg(feature = "compression")]
+#[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Compression {
     /// Automatically detect the compression format from the file extension.
@@ -158,12 +162,27 @@ pub enum Compression {
     None,
     /// Gzip compression.
     Gzip,
+    /// Zstandard compression.
+    Zstd,
+    /// Bzip2 compression.
+    Bzip2,
 }
 
-#[cfg(feature = "compression")]
+#[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
 impl Default for Compression {
     fn default() -> Self {
         Compression::Auto
+    }
+}
+
+#[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+fn detect_compression_from_extension(path: &Path) -> Compression {
+    let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    match ext {
+        "gz" => Compression::Gzip,
+        "zst" | "zstd" => Compression::Zstd,
+        "bz2" | "bzip2" => Compression::Bzip2,
+        _ => Compression::None,
     }
 }
 
@@ -192,7 +211,7 @@ pub struct ReaderBuilder<R: BedFormat + Into<GenePred>> {
     additional_fields: usize,
     mode: ReaderMode,
     buffer_capacity: usize,
-    #[cfg(feature = "compression")]
+    #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
     compression: Compression,
     _marker: PhantomData<R>,
 }
@@ -204,7 +223,7 @@ impl<R: BedFormat + Into<GenePred>> Default for ReaderBuilder<R> {
             additional_fields: 0,
             mode: ReaderMode::Default,
             buffer_capacity: 64 * 1024,
-            #[cfg(feature = "compression")]
+            #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
             compression: Compression::default(),
             _marker: PhantomData,
         }
@@ -248,7 +267,7 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
     }
 
     /// Sets the compression format of the input.
-    #[cfg(feature = "compression")]
+    #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
     pub fn compression(mut self, compression: Compression) -> Self {
         self.compression = compression;
         self
@@ -307,36 +326,72 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
 
     /// Opens a path as a stream.
     fn open_path_stream(&self, path: &Path) -> ReaderResult<Box<dyn Read + Send>> {
-        #[cfg(feature = "compression")]
+        #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
         {
             let file = File::open(path)?;
             let compression = match self.compression {
-                Compression::Auto => {
-                    if path.extension().is_some_and(|ext| ext == "gz") {
-                        Compression::Gzip
-                    } else {
-                        Compression::None
-                    }
-                }
+                Compression::Auto => detect_compression_from_extension(path),
                 other => other,
             };
+
+            if !matches!(compression, Compression::None | Compression::Auto)
+                && !matches!(self.mode, ReaderMode::Default)
+            {
+                return Err(ReaderError::Builder(
+                    "compression is only supported in buffered mode".into(),
+                ));
+            }
 
             return match compression {
                 Compression::None | Compression::Auto => Ok(Box::new(file)),
                 Compression::Gzip => {
-                    if matches!(self.mode, ReaderMode::Default) {
+                    #[cfg(feature = "gzip")]
+                    {
                         Ok(Box::new(MultiGzDecoder::new(file)))
-                    } else {
+                    }
+                    #[cfg(not(feature = "gzip"))]
+                    {
                         Err(ReaderError::Builder(
-                            "gzip compression is only supported in buffered mode".into(),
+                            "gzip compression requested but the `gzip` feature is disabled".into(),
+                        ))
+                    }
+                }
+                Compression::Zstd => {
+                    #[cfg(feature = "zstd")]
+                    {
+                        Ok(Box::new(ZstdDecoder::new(file)?))
+                    }
+                    #[cfg(not(feature = "zstd"))]
+                    {
+                        Err(ReaderError::Builder(
+                            "zstd compression requested but the `zstd` feature is disabled".into(),
+                        ))
+                    }
+                }
+                Compression::Bzip2 => {
+                    #[cfg(feature = "bz2")]
+                    {
+                        Ok(Box::new(BzDecoder::new(file)))
+                    }
+                    #[cfg(not(feature = "bz2"))]
+                    {
+                        Err(ReaderError::Builder(
+                            "bzip2 compression requested but the `bz2` feature is disabled".into(),
                         ))
                     }
                 }
             };
         }
 
-        #[cfg(not(feature = "compression"))]
+        #[cfg(not(any(feature = "gzip", feature = "zstd", feature = "bz2")))]
         {
+            if path.extension().is_some_and(|ext| {
+                matches!(ext.to_str(), Some("gz" | "zst" | "zstd" | "bz2" | "bzip2"))
+            }) {
+                return Err(ReaderError::Builder(
+                    "ERROR: enable compression features to read compressed inputs".into(),
+                ));
+            }
             Ok(Box::new(File::open(path)?))
         }
     }
@@ -356,6 +411,16 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
         if self.additional_fields != 0 {
             return Err(ReaderError::Builder(
                 "ERROR: additional fields are not supported for this format".into(),
+            ));
+        }
+
+        if matches!(self.mode, ReaderMode::Mmap)
+            && path.extension().is_some_and(|ext| {
+                matches!(ext.to_str(), Some("gz" | "zst" | "zstd" | "bz2" | "bzip2"))
+            })
+        {
+            return Err(ReaderError::Builder(
+                "ERROR: compression is only supported in buffered mode".into(),
             ));
         }
 

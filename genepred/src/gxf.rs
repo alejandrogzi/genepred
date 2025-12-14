@@ -9,11 +9,15 @@ use std::{
     path::Path,
 };
 
-#[cfg(feature = "compression")]
+#[cfg(feature = "bz2")]
+use bzip2::read::BzDecoder;
+#[cfg(feature = "gzip")]
 use flate2::read::MultiGzDecoder;
 use memchr::memchr;
 #[cfg(feature = "mmap")]
 use memmap2::MmapOptions;
+#[cfg(feature = "zstd")]
+use zstd::stream::read::Decoder as ZstdDecoder;
 
 use crate::{
     bed::BedFormat,
@@ -21,6 +25,9 @@ use crate::{
     reader::{ReaderError, ReaderResult},
     strand::Strand,
 };
+
+#[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+use crate::reader::Compression;
 
 /// Marker type for GTF readers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,8 +107,8 @@ impl<'a> GxfOptions<'a> {
 /// Reads a GXF (GTF/GFF) file and produces fully aggregated `GenePred` records.
 ///
 /// This function reads a GXF file from the given path, parses it, and aggregates
-/// the records into a `Vec<GenePred>`. It handles both plain and gzip-compressed
-/// files (if the `compression` feature is enabled).
+/// the records into a `Vec<GenePred>`. It handles plain files and gzip, zstd, or
+/// bzip2 compressed inputs when the corresponding features are enabled.
 ///
 /// # Arguments
 ///
@@ -123,6 +130,20 @@ where
 }
 
 #[cfg(feature = "mmap")]
+/// Reads a GXF file from a memory-mapped file.
+///
+/// This function reads a GXF file from a memory-mapped file, parses it, and
+/// aggregates the records into a `Vec<GenePred>`.
+///
+/// # Arguments
+///
+/// * `path` - The path to the GXF file.
+/// * `options` - Configuration options for parsing the file.
+///
+/// # Returns
+///
+/// A `ReaderResult` containing a `Vec<GenePred>` of the parsed records, or a
+/// `ReaderError` if the file could not be read or parsed.
 pub(crate) fn read_gxf_mmap<F, P>(path: P, options: &GxfOptions<'_>) -> ReaderResult<Vec<GenePred>>
 where
     F: GxfFormat,
@@ -140,26 +161,104 @@ where
 /// Opens a file and returns a boxed reader.
 ///
 /// This function opens a file from the given path and returns a boxed `Read`
-/// trait object. It handles both plain and gzip-compressed files (if the
-/// `compression` feature is enabled).
+/// trait object. It handles both plain and gzip/zstd/bzip2-compressed files
+/// when the matching feature is enabled.
+///
+/// # Example
+///
+/// ```rust,no_run,ignore
+/// use genepred::{Reader, Bed3};
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let reader = Reader::from_path("tests/data/simple.bed.gz")?;
+///     let mut stream = reader.open_stream()?;
+///     let mut buffer = String::new();
+///     stream.read_to_string(&mut buffer)?;
+///     println!("{}", buffer);
+///     Ok(())
+/// }
+/// ```
 fn open_stream(path: &Path) -> ReaderResult<Box<dyn Read + Send>> {
-    #[cfg(feature = "compression")]
+    #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
     {
         let file = File::open(path)?;
-        if path.extension().is_some_and(|ext| ext == "gz") {
-            return Ok(Box::new(MultiGzDecoder::new(file)));
-        }
-        return Ok(Box::new(file));
+        let compression = compression_from_extension(path);
+        return match compression {
+            Compression::None | Compression::Auto => Ok(Box::new(file)),
+            Compression::Gzip => {
+                #[cfg(feature = "gzip")]
+                {
+                    Ok(Box::new(MultiGzDecoder::new(file)))
+                }
+                #[cfg(not(feature = "gzip"))]
+                {
+                    Err(ReaderError::Builder(
+                        "ERROR: enable the `gzip` feature to read .gz inputs".into(),
+                    ))
+                }
+            }
+            Compression::Zstd => {
+                #[cfg(feature = "zstd")]
+                {
+                    Ok(Box::new(ZstdDecoder::new(file)?))
+                }
+                #[cfg(not(feature = "zstd"))]
+                {
+                    Err(ReaderError::Builder(
+                        "ERROR: enable the `zstd` feature to read .zst inputs".into(),
+                    ))
+                }
+            }
+            Compression::Bzip2 => {
+                #[cfg(feature = "bz2")]
+                {
+                    Ok(Box::new(BzDecoder::new(file)))
+                }
+                #[cfg(not(feature = "bz2"))]
+                {
+                    Err(ReaderError::Builder(
+                        "ERROR: enable the `bz2` feature to read .bz2 inputs".into(),
+                    ))
+                }
+            }
+        };
     }
 
-    #[cfg(not(feature = "compression"))]
+    #[cfg(not(any(feature = "gzip", feature = "zstd", feature = "bz2")))]
     {
-        if path.extension().is_some_and(|ext| ext == "gz") {
+        if path.extension().is_some_and(|ext| {
+            matches!(ext.to_str(), Some("gz" | "zst" | "zstd" | "bz2" | "bzip2"))
+        }) {
             return Err(ReaderError::Builder(
-                "ERROR: enable the `compression` feature to read .gz inputs".into(),
+                "ERROR: enable a compression feature to read compressed inputs".into(),
             ));
         }
         Ok(Box::new(File::open(path)?))
+    }
+}
+
+#[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+/// Returns the compression format of the input file.
+///
+/// # Example
+///
+/// ```rust,no_run,ignore
+/// use genepred::{Reader, Bed3};
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let reader = Reader::from_path("tests/data/simple.bed.gz")?;
+///     let compression = reader.compression();
+///     assert_eq!(compression, Compression::Gzip);
+///     Ok(())
+/// }
+/// ```
+fn compression_from_extension(path: &Path) -> Compression {
+    let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+    match ext {
+        "gz" => Compression::Gzip,
+        "zst" | "zstd" => Compression::Zstd,
+        "bz2" | "bzip2" => Compression::Bzip2,
+        _ => Compression::None,
     }
 }
 
@@ -549,6 +648,20 @@ struct Interval {
     start: u64,
     end: u64,
 }
+
+/// Fast equality check that ignores ASCII case.
+///
+/// This function compares two byte slices and returns `true` if they are of
+/// the same length and contain the same bytes, ignoring ASCII case.
+///
+/// # Arguments
+///
+/// * `lhs` - The first byte slice to compare.
+/// * `rhs` - The second byte slice to compare.
+///
+/// # Returns
+///
+/// `true` if the byte slices are equal, ignoring ASCII case.
 fn eq_ignore_ascii(lhs: &[u8], rhs: &[u8]) -> bool {
     lhs.len() == rhs.len()
         && lhs

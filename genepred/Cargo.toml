@@ -4,7 +4,7 @@ version = "0.0.2"
 edition = "2021"
 authors = ["alejandrogzi <alejandrxgzi@gmail.com>"]
 license = "MIT"
-description = "A simple port for the GenePred format in Rust"
+description = "port for the GenePred format in Rust"
 keywords = ["genepred", "bioinformatics", "transcript", "bed"]
 readme = "../README.md"
 homepage = "https://github.com/alejandrogzi/genepred"
@@ -16,18 +16,26 @@ default = ["std"]
 std = []
 rayon = ["dep:rayon"]
 mmap = ["dep:memmap2"]
-compression = ["dep:flate2"]
+gzip = ["dep:flate2"]
+zstd = ["dep:zstd"]
+bz2 = ["dep:bzip2"]
+compression = ["gzip"]
 
 [dependencies]
 rayon = { version = "1.10", optional = true }
 memmap2 = { version = "0.9", optional = true }
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"], optional = true }
+bzip2 = { version = "0.4", optional = true }
+zstd = { version = "0.13", optional = true }
 memchr = "2.7"
 
 [profile.release]
 lto = true
 opt-level = 3
 codegen-units = 1
+
+[dev-dependencies]
+tempfile = "3.10"
 
 [[test]]
 name = "reader"
