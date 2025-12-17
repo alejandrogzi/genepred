@@ -9,11 +9,13 @@ use std::path::{Path, PathBuf};
 use bzip2::read::BzDecoder;
 #[cfg(feature = "gzip")]
 use flate2::read::MultiGzDecoder;
+#[cfg(feature = "rayon")]
+use memchr::memchr;
 #[cfg(feature = "mmap")]
 use memmap2::MmapOptions;
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
-#[cfg(feature = "mmap")]
+#[cfg(any(feature = "mmap", feature = "rayon"))]
 use std::sync::Arc;
 #[cfg(feature = "zstd")]
 use zstd::stream::read::Decoder as ZstdDecoder;
@@ -895,31 +897,89 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     ///     }
     /// ```
     #[cfg(feature = "rayon")]
-    pub fn par_records(mut self) -> ReaderResult<ParallelRecords<R>> {
-        if let Some(iter) = self.preloaded.take() {
-            let records: Vec<GenePred> = iter.collect();
-            return Ok(ParallelRecords {
-                lines: Vec::new(),
-                preloaded: Some(records),
-                additional_fields: self.additional_fields,
-                _marker: PhantomData,
-            });
-        }
-
-        let mut lines = Vec::new();
-        while let Some(line) = self.read_line_owned()? {
-            let number = self.line_number;
-            if should_skip(&line) {
-                continue;
-            }
-            lines.push((number, line));
-        }
+    pub fn par_records(self) -> ReaderResult<ParallelRecords<R>> {
+        let (input, additional_fields) = self.into_parallel_input()?;
         Ok(ParallelRecords {
-            lines,
-            preloaded: None,
-            additional_fields: self.additional_fields,
+            input,
+            additional_fields,
             _marker: PhantomData,
         })
+    }
+
+    /// Returns a parallel iterator over chunks of the records in the reader.
+    ///
+    /// This requires the `rayon` feature.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run,ignore
+    /// use genepred::{Reader, Bed3};
+    /// use rayon::prelude::*;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let reader = Reader::from_path("tests/data/simple.bed")?;
+    ///
+    ///     if let Ok(chunks) = reader.par_chunks(1024) {
+    ///         chunks.for_each(|(chunk_idx, records)| {
+    ///             println!("chunk {chunk_idx} => {}", records.len());
+    ///         });
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    #[cfg(feature = "rayon")]
+    pub fn par_chunks(self, chunk_size: usize) -> ReaderResult<ParallelChunks<R>> {
+        if chunk_size == 0 {
+            return Err(ReaderError::Builder(
+                "ERROR: chunk_size must be greater than 0".into(),
+            ));
+        }
+
+        let (input, additional_fields) = self.into_parallel_input()?;
+        Ok(ParallelChunks {
+            input,
+            chunk_size,
+            additional_fields,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Convert the reader into a parallel reader.
+    #[cfg(feature = "rayon")]
+    fn into_parallel_input(mut self) -> ReaderResult<(ParallelInput, usize)> {
+        let additional_fields = self.additional_fields;
+        if let Some(iter) = self.preloaded.take() {
+            return Ok((ParallelInput::Preloaded(iter.collect()), additional_fields));
+        }
+
+        match self.inner {
+            InnerSource::Buffered(mut reader) => {
+                let mut data = Vec::new();
+                reader.read_to_end(&mut data)?;
+                let data = Arc::new(data);
+                let spans = build_line_spans(&data, 0, self.line_number);
+                Ok((
+                    ParallelInput::Bytes {
+                        data: SharedBytes::Owned(data),
+                        spans,
+                    },
+                    additional_fields,
+                ))
+            }
+            #[cfg(feature = "mmap")]
+            InnerSource::Mmap(inner) => {
+                let base = inner.cursor;
+                let data = inner.data.clone();
+                let spans = build_line_spans(&data[base..], base, self.line_number);
+                Ok((
+                    ParallelInput::Bytes {
+                        data: SharedBytes::Mmap(data),
+                        spans,
+                    },
+                    additional_fields,
+                ))
+            }
+        }
     }
 
     /// Returns the next record in the reader.
@@ -1129,6 +1189,46 @@ impl<'a, R: BedFormat + Into<GenePred>> Iterator for Records<'a, R> {
     }
 }
 
+#[cfg(feature = "rayon")]
+#[derive(Clone)]
+struct LineSpan {
+    line_no: usize,
+    start: usize,
+    end: usize,
+}
+
+#[cfg(feature = "rayon")]
+#[derive(Clone)]
+enum SharedBytes {
+    #[cfg(feature = "mmap")]
+    Mmap(Arc<memmap2::Mmap>),
+    Owned(Arc<Vec<u8>>),
+}
+
+#[cfg(feature = "rayon")]
+impl SharedBytes {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            #[cfg(feature = "mmap")]
+            SharedBytes::Mmap(map) => map.as_ref(),
+            SharedBytes::Owned(bytes) => bytes.as_slice(),
+        }
+    }
+
+    fn slice(&self, start: usize, end: usize) -> &[u8] {
+        &self.as_slice()[start..end]
+    }
+}
+
+#[cfg(feature = "rayon")]
+enum ParallelInput {
+    Preloaded(Vec<GenePred>),
+    Bytes {
+        data: SharedBytes,
+        spans: Vec<LineSpan>,
+    },
+}
+
 /// A parallel iterator over the records in a `Reader`.
 ///
 /// This struct is created by the `par_records` method on `Reader`.
@@ -1136,30 +1236,22 @@ impl<'a, R: BedFormat + Into<GenePred>> Iterator for Records<'a, R> {
 /// This requires the `rayon` feature.
 #[cfg(feature = "rayon")]
 pub struct ParallelRecords<R: BedFormat + Into<GenePred>> {
-    lines: Vec<(usize, String)>,
-    preloaded: Option<Vec<GenePred>>,
+    input: ParallelInput,
     additional_fields: usize,
     _marker: PhantomData<R>,
 }
 
+/// A parallel iterator over chunks of records in a `Reader`.
+///
+/// This struct is created by the `par_chunks` method on `Reader`.
+///
+/// This requires the `rayon` feature.
 #[cfg(feature = "rayon")]
-impl<R: BedFormat + Into<GenePred>> ParallelRecords<R> {
-    /// Parses a single line for parallel processing.
-    ///
-    /// This internal function is used by the parallel iterator implementation
-    /// to parse individual lines in parallel.
-    ///
-    /// # Arguments
-    ///
-    /// * `(line_number, line)` - A tuple containing the line number and line content
-    /// * `additional` - The number of additional fields to expect
-    ///
-    /// # Returns
-    ///
-    /// A `ReaderResult` containing the parsed record
-    fn parse_line((line_number, line): &(usize, String), additional: usize) -> ReaderResult<R> {
-        parse_line::<R>(line, additional, *line_number)
-    }
+pub struct ParallelChunks<R: BedFormat + Into<GenePred>> {
+    input: ParallelInput,
+    chunk_size: usize,
+    additional_fields: usize,
+    _marker: PhantomData<R>,
 }
 
 #[cfg(feature = "rayon")]
@@ -1170,19 +1262,72 @@ impl<R: BedFormat + Into<GenePred> + Send> ParallelIterator for ParallelRecords<
     where
         C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
     {
-        if let Some(records) = self.preloaded {
-            return records
+        match self.input {
+            ParallelInput::Preloaded(records) => records
                 .into_par_iter()
                 .map(ReaderResult::Ok)
-                .drive_unindexed(consumer);
+                .drive_unindexed(consumer),
+            ParallelInput::Bytes { data, spans } => {
+                let additional = self.additional_fields;
+                spans
+                    .into_par_iter()
+                    .map_with(data, move |data, span| {
+                        parse_line_bytes::<R>(
+                            data.slice(span.start, span.end),
+                            additional,
+                            span.line_no,
+                        )
+                        .map(Into::into)
+                    })
+                    .drive_unindexed(consumer)
+            }
         }
+    }
+}
 
-        self.lines
-            .into_par_iter()
-            .map(|(line, text)| {
-                parse_line::<R>(&text, self.additional_fields, line).map(Into::into)
-            })
-            .drive_unindexed(consumer)
+#[cfg(feature = "rayon")]
+impl<R: BedFormat + Into<GenePred> + Send> ParallelIterator for ParallelChunks<R> {
+    type Item = (usize, Vec<ReaderResult<GenePred>>);
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        match self.input {
+            ParallelInput::Preloaded(records) => records
+                .par_chunks(self.chunk_size)
+                .enumerate()
+                .map(|(chunk_idx, chunk)| {
+                    let parsed = chunk
+                        .iter()
+                        .cloned()
+                        .map(ReaderResult::Ok)
+                        .collect::<Vec<_>>();
+                    (chunk_idx, parsed)
+                })
+                .drive_unindexed(consumer),
+            ParallelInput::Bytes { data, spans } => {
+                let additional = self.additional_fields;
+                let chunk_size = self.chunk_size;
+                spans
+                    .par_chunks(chunk_size)
+                    .enumerate()
+                    .map_with(data, move |data, (chunk_idx, chunk)| {
+                        let mut out = Vec::with_capacity(chunk.len());
+                        for span in chunk {
+                            let parsed = parse_line_bytes::<R>(
+                                data.slice(span.start, span.end),
+                                additional,
+                                span.line_no,
+                            )
+                            .map(Into::into);
+                            out.push(parsed);
+                        }
+                        (chunk_idx, out)
+                    })
+                    .drive_unindexed(consumer)
+            }
+        }
     }
 }
 
@@ -1218,10 +1363,13 @@ fn parse_line<R: BedFormat>(
     line_number: usize,
 ) -> ReaderResult<R> {
     let trimmed = line.trim();
-    let mut fields: Vec<&str> = trimmed
-        .split('\t')
-        .filter(|segment| !segment.is_empty())
-        .collect();
+    let expected_fields = R::FIELD_COUNT + additional_fields;
+    let mut fields = Vec::with_capacity(expected_fields.max(4));
+    for segment in trimmed.split('\t') {
+        if !segment.is_empty() {
+            fields.push(segment);
+        }
+    }
 
     if fields.is_empty() {
         return Err(ReaderError::invalid_field(
@@ -1231,10 +1379,10 @@ fn parse_line<R: BedFormat>(
         ));
     }
 
-    if fields.len() < R::FIELD_COUNT + additional_fields {
+    if fields.len() < expected_fields {
         return Err(ReaderError::unexpected_field_count(
             line_number,
-            R::FIELD_COUNT + additional_fields,
+            expected_fields,
             fields.len(),
         ));
     }
@@ -1242,9 +1390,8 @@ fn parse_line<R: BedFormat>(
     let extras = if additional_fields == 0 {
         Extras::new()
     } else {
-        let extra_fields = fields.split_off(R::FIELD_COUNT);
         let mut extras = Extras::new();
-        for (idx, field) in extra_fields.into_iter().enumerate() {
+        for (idx, field) in fields.iter().skip(R::FIELD_COUNT).enumerate() {
             let key = (R::FIELD_COUNT + idx + 1).to_string().into_bytes();
             extras.insert(key, ExtraValue::Scalar(field.as_bytes().to_vec()));
         }
@@ -1252,6 +1399,17 @@ fn parse_line<R: BedFormat>(
     };
 
     R::from_fields(&fields[..R::FIELD_COUNT], extras, line_number)
+}
+
+#[cfg(feature = "rayon")]
+fn parse_line_bytes<R: BedFormat>(
+    line: &[u8],
+    additional_fields: usize,
+    line_number: usize,
+) -> ReaderResult<R> {
+    let text = std::str::from_utf8(line)
+        .map_err(|err| ReaderError::invalid_encoding(line_number, err.to_string()))?;
+    parse_line::<R>(text, additional_fields, line_number)
 }
 
 /// Trim a line of a BED file.
@@ -1272,4 +1430,56 @@ fn should_skip(line: &str) -> bool {
         || trimmed.starts_with('#')
         || trimmed.starts_with("track ")
         || trimmed.starts_with("browser ")
+}
+
+#[cfg(feature = "rayon")]
+fn should_skip_bytes(line: &[u8]) -> bool {
+    let mut start = 0usize;
+    let mut end = line.len();
+
+    while start < end && line[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while start < end && line[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start == end {
+        return true;
+    }
+
+    let trimmed = &line[start..end];
+    trimmed.starts_with(b"#") || trimmed.starts_with(b"track ") || trimmed.starts_with(b"browser ")
+}
+
+#[cfg(feature = "rayon")]
+fn build_line_spans(data: &[u8], base_offset: usize, starting_line: usize) -> Vec<LineSpan> {
+    let mut spans = Vec::new();
+    let mut offset = 0usize;
+    let mut line_no = starting_line;
+
+    while offset < data.len() {
+        let line_start = offset;
+        let rel_end = memchr(b'\n', &data[line_start..]).map(|idx| line_start + idx);
+        let line_end = rel_end.unwrap_or(data.len());
+        let mut end = line_end;
+        if end > line_start && data[end - 1] == b'\r' {
+            end -= 1;
+        }
+
+        line_no += 1;
+        let next_offset = rel_end.map(|pos| pos + 1).unwrap_or(data.len());
+
+        if !should_skip_bytes(&data[line_start..end]) {
+            spans.push(LineSpan {
+                line_no,
+                start: base_offset + line_start,
+                end: base_offset + end,
+            });
+        }
+
+        offset = next_offset;
+    }
+
+    spans
 }
