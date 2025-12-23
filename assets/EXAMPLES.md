@@ -337,4 +337,45 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Parallel I/O operations
+
+I/O heavily parallelized
+
+```rust,no_run
+use genepred::{Bed12, Bed6, Gff, Reader, Writer};
+use rayon::prelude::*;
+use tempfile::NamedTempFile;
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+fn main() {
+    let reader = Reader::<Bed12>::from_mmap(path).unwrap_or_else(|e| panic!("{}", e));
+    let chunks = reader
+        .par_chunks(10000)
+        .unwrap_or_else(|e| panic!("{}", e))
+        .map(|(idx, chunk)| {
+            println!("Processing chunk {}", idx);
+            let mut tmp = NamedTempFile::new().unwrap_or_else(|e| panic!("{}", e));
+
+            chunk.into_iter().filter_map(Result::ok).for_each(|gene| {
+                let _ = Writer::<Gff>::from_record(&gene, &mut tmp);
+            });
+
+            let (file, path) = tmp.keep().unwrap_or_else(|e| panic!("{}", e));
+            path
+        })
+        .collect::<Vec<_>>();
+
+    let mut writer = std::io::BufWriter::new(std::fs::File::create("output.gff").unwrap());
+
+    for path in chunks {
+        let mut file = std::fs::File::open(&path).unwrap_or_else(|e| panic!("{}", e));
+        std::io::copy(&mut file, &mut writer).unwrap_or_else(|e| panic!("{}", e));
+
+        std::fs::remove_file(path).unwrap_or_else(|e| panic!("{}", e));
+    }
+}
+```
+
 

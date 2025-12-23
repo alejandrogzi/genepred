@@ -4,6 +4,8 @@ use bzip2::write::BzEncoder;
 use bzip2::Compression as BzCompression;
 use genepred::reader::Reader;
 use genepred::{Bed12, Bed3, Bed4, Bed6, ExtraValue, Gff, Gtf, Strand};
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 #[cfg(any(feature = "bz2", feature = "zstd"))]
 use std::fs::File;
 #[cfg(any(feature = "bz2", feature = "zstd"))]
@@ -248,6 +250,27 @@ fn test_reader_gtf_gz_from_path() {
     let gene = &records[0];
     assert_eq!(gene.name().unwrap(), b"GeneOne".as_ref());
     assert_eq!(gene.block_count().unwrap(), 2);
+}
+
+#[cfg(feature = "rayon")]
+#[test]
+fn test_par_chunks_from_reader() {
+    let data = "chr1\t10\t20\n# comment\nchr1\t30\t40\nchr2\t50\t60\n";
+    let reader: Reader<Bed3> = Reader::from_reader(std::io::Cursor::new(data.as_bytes())).unwrap();
+    let mut chunks: Vec<_> = reader.par_chunks(2).unwrap().collect();
+
+    chunks.sort_by_key(|(idx, _)| *idx);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].0, 0);
+    assert_eq!(chunks[0].1.len(), 2);
+    assert_eq!(chunks[1].1.len(), 1);
+
+    let starts: Vec<u64> = chunks
+        .iter()
+        .flat_map(|(_, records)| records.iter())
+        .map(|result| result.as_ref().unwrap().start())
+        .collect();
+    assert_eq!(starts, vec![10, 30, 50]);
 }
 
 #[cfg(feature = "zstd")]
