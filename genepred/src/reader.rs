@@ -9,11 +9,17 @@ use std::path::{Path, PathBuf};
 use bzip2::read::BzDecoder;
 #[cfg(feature = "gzip")]
 use flate2::read::MultiGzDecoder;
+#[cfg(any(feature = "rayon", feature = "mmap"))]
+use memchr::memchr;
+#[cfg(feature = "rayon")]
+use memchr::memchr_iter;
 #[cfg(feature = "mmap")]
 use memmap2::MmapOptions;
 #[cfg(feature = "rayon")]
+use rayon::iter::ParallelBridge;
+#[cfg(feature = "rayon")]
 use rayon::prelude::*;
-#[cfg(feature = "mmap")]
+#[cfg(any(feature = "mmap", feature = "rayon"))]
 use std::sync::Arc;
 #[cfg(feature = "zstd")]
 use zstd::stream::read::Decoder as ZstdDecoder;
@@ -168,6 +174,7 @@ pub enum Compression {
     Bzip2,
 }
 
+/// Default compression
 #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
 impl Default for Compression {
     fn default() -> Self {
@@ -175,6 +182,7 @@ impl Default for Compression {
     }
 }
 
+/// Detect compression from file extension
 #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
 fn detect_compression_from_extension(path: &Path) -> Compression {
     let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
@@ -475,17 +483,20 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
     }
 }
 
+/// Reader source
 enum ReaderSource {
     Path(PathBuf),
     Reader(Box<dyn Read + Send>),
 }
 
+/// Inner reader source
 enum InnerSource {
     Buffered(BufReader<Box<dyn Read + Send>>),
     #[cfg(feature = "mmap")]
     Mmap(MmapInner),
 }
 
+/// Inner mmap reader source
 #[cfg(feature = "mmap")]
 struct MmapInner {
     data: Arc<memmap2::Mmap>,
@@ -523,6 +534,7 @@ pub struct Reader<R: BedFormat + Into<GenePred>> {
     buffer: String,
     additional_fields: usize,
     line_number: usize,
+    extra_keys: Vec<Vec<u8>>,
     preloaded: Option<std::vec::IntoIter<GenePred>>,
     _marker: PhantomData<R>,
 }
@@ -560,10 +572,9 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use genepred::{Reader, Bed3};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_path("tests/data/simple.bed")?;
+    ///     let reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
     ///
-    ///     for record in reader {
-    ///         let record = record?;
+    ///     for record in reader.records() {
     ///         // ...
     ///     }
     ///
@@ -583,10 +594,9 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use genepred::{Reader, Bed3};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_path_with_additional_fields("tests/data/simple.bed", 1)?;
+    ///     let reader = Reader::<Bed3>::from_path_with_additional_fields("tests/data/simple.bed", 1)?;
     ///
-    ///     for record in reader {
-    ///         let record = record?;
+    ///     for record in reader.records() {
     ///         // ...
     ///     }
     ///
@@ -611,10 +621,9 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use genepred::{Reader, Bed3};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_reader(std::io::stdin())?;
+    ///     let reader = Reader::<Bed3>::from_reader(std::io::stdin())?;
     ///
-    ///     for record in reader {
-    ///         let record = record?;
+    ///     for record in reader.records() {
     ///         // ...
     ///     }
     ///
@@ -651,11 +660,13 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
         additional_fields: usize,
         buffer_capacity: usize,
     ) -> ReaderResult<Self> {
+        let extra_keys = build_extra_keys(R::FIELD_COUNT, additional_fields);
         Ok(Self {
             inner: InnerSource::Buffered(BufReader::with_capacity(buffer_capacity, reader)),
             buffer: String::with_capacity(1024),
             additional_fields,
             line_number: 0,
+            extra_keys,
             preloaded: None,
             _marker: PhantomData,
         })
@@ -694,6 +705,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     pub(crate) fn from_preloaded_records(records: Vec<GenePred>) -> ReaderResult<Self> {
         let mut reader = Self::from_stream(Box::new(io::empty()), 0, 1)?;
         reader.preloaded = Some(records.into_iter());
+        reader.extra_keys = Vec::new();
         Ok(reader)
     }
 
@@ -705,10 +717,9 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use genepred::{Reader, Bed3};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_mmap("tests/data/simple.bed")?;
+    ///     let reader = Reader::<Bed3>::from_mmap("tests/data/simple.bed")?;
     ///
-    ///     for record in reader {
-    ///         let record = record?;
+    ///     for record in reader.records() {
     ///         // ...
     ///     }
     ///
@@ -720,7 +731,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use rayon::prelude::*;
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_mmap("tests/data/simple.bed")?;
+    ///     let reader = Reader::<Bed3>::from_mmap("tests/data/simple.bed")?;
     ///     if let Ok(records) = reader.par_records() {
     ///         records.for_each(|record| {
     ///             let record = record;
@@ -753,6 +764,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
             buffer: String::with_capacity(1024),
             additional_fields: 0,
             line_number: 0,
+            extra_keys: Vec::new(),
             preloaded: None,
             _marker: PhantomData,
         })
@@ -766,10 +778,9 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use genepred::{Reader, Bed3};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_mmap_with_additional_fields("tests/data/simple.bed", 1)?;
+    ///     let reader = Reader::<Bed3>::from_mmap_with_additional_fields("tests/data/simple.bed", 1)?;
     ///
-    ///     for record in reader {
-    ///         let record = record?;
+    ///     for record in reader.records() {
     ///         // ...
     ///     }
     ///
@@ -781,7 +792,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use rayon::prelude::*;
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_mmap_with_additional_fields("tests/data/simple.bed", 1)?;
+    ///     let reader = Reader::<Bed3>::from_mmap_with_additional_fields("tests/data/simple.bed", 1)?;
     ///     if let Ok(records) = reader.par_records() {
     ///         records.for_each(|record| {
     ///             let record = record;
@@ -813,6 +824,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
             buffer: String::with_capacity(1024),
             additional_fields,
             line_number: 0,
+            extra_keys: build_extra_keys(R::FIELD_COUNT, additional_fields),
             preloaded: None,
             _marker: PhantomData,
         })
@@ -826,7 +838,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use genepred::{Reader, Bed3};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_path("tests/data/simple.bed")?;
+    ///     let reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
     ///     let additional_fields = reader.additional_fields();
     ///     assert_eq!(additional_fields, 0);
     ///     Ok(())
@@ -844,7 +856,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use genepred::{Reader, Bed3};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_path("tests/data/simple.bed")?;
+    ///     let reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
     ///     let line_number = reader.current_line();
     ///     assert_eq!(line_number, 0);
     ///     Ok(())
@@ -885,7 +897,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use rayon::prelude::*;
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::from_path("tests/data/simple.bed")?;
+    ///     let reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
     ///
     ///     if let Ok(records) = reader.par_records() {
     ///         records.for_each(|record| {
@@ -895,31 +907,134 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     ///     }
     /// ```
     #[cfg(feature = "rayon")]
-    pub fn par_records(mut self) -> ReaderResult<ParallelRecords<R>> {
-        if let Some(iter) = self.preloaded.take() {
-            let records: Vec<GenePred> = iter.collect();
-            return Ok(ParallelRecords {
-                lines: Vec::new(),
-                preloaded: Some(records),
-                additional_fields: self.additional_fields,
+    pub fn par_records(self) -> ReaderResult<ParallelRecords<R>> {
+        let (input, additional_fields) = self.into_parallel_input()?;
+        Ok(ParallelRecords {
+            input,
+            additional_fields,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Returns a parallel iterator over chunks of the records in the reader.
+    ///
+    /// This requires the `rayon` feature.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run,ignore
+    /// use genepred::{Reader, Bed3};
+    /// use rayon::prelude::*;
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
+    ///
+    ///     if let Ok(chunks) = reader.par_chunks(1024) {
+    ///         chunks.for_each(|(chunk_idx, records)| {
+    ///             println!("chunk {chunk_idx} => {}", records.len());
+    ///         });
+    ///     }
+    ///     Ok(())
+    /// }
+    /// ```
+    #[cfg(feature = "rayon")]
+    pub fn par_chunks(self, chunk_size: usize) -> ReaderResult<ParallelChunks<R>> {
+        if chunk_size == 0 {
+            return Err(ReaderError::Builder(
+                "ERROR: chunk_size must be greater than 0".into(),
+            ));
+        }
+
+        let mut reader = self;
+        if let Some(iter) = reader.preloaded.take() {
+            let input = ParallelInput::Preloaded(iter.collect());
+            return Ok(ParallelChunks {
+                inner: ParallelChunksInner::Input { input, chunk_size },
+                additional_fields: reader.additional_fields,
                 _marker: PhantomData,
             });
         }
 
-        let mut lines = Vec::new();
-        while let Some(line) = self.read_line_owned()? {
-            let number = self.line_number;
-            if should_skip(&line) {
-                continue;
+        match reader.inner {
+            InnerSource::Buffered(inner_reader) => {
+                let stream = StreamChunkIter {
+                    reader: inner_reader,
+                    chunk_size,
+                    additional_fields: reader.additional_fields,
+                    extra_keys: Arc::new(reader.extra_keys.clone()),
+                    line_number: reader.line_number,
+                    chunk_idx: 0,
+                    buf: Vec::with_capacity(1024),
+                    _marker: PhantomData,
+                };
+
+                Ok(ParallelChunks {
+                    inner: ParallelChunksInner::Stream(stream),
+                    additional_fields: reader.additional_fields,
+                    _marker: PhantomData,
+                })
             }
-            lines.push((number, line));
+            #[cfg(feature = "mmap")]
+            InnerSource::Mmap(inner) => {
+                let extra_keys = Arc::new(reader.extra_keys.clone());
+                let base = inner.cursor;
+                let data = inner.data.clone();
+                let spans = build_line_spans(&data[base..], base, reader.line_number);
+
+                let input = ParallelInput::Bytes {
+                    data: SharedBytes::Mmap(data),
+                    spans,
+                    extra_keys,
+                };
+
+                Ok(ParallelChunks {
+                    inner: ParallelChunksInner::Input { input, chunk_size },
+                    additional_fields: reader.additional_fields,
+                    _marker: PhantomData,
+                })
+            }
         }
-        Ok(ParallelRecords {
-            lines,
-            preloaded: None,
-            additional_fields: self.additional_fields,
-            _marker: PhantomData,
-        })
+    }
+
+    /// Convert the reader into a parallel reader.
+    #[cfg(feature = "rayon")]
+    fn into_parallel_input(mut self) -> ReaderResult<(ParallelInput, usize)> {
+        let additional_fields = self.additional_fields;
+        let extra_keys = Arc::new(self.extra_keys.clone());
+        if let Some(iter) = self.preloaded.take() {
+            return Ok((ParallelInput::Preloaded(iter.collect()), additional_fields));
+        }
+
+        match self.inner {
+            InnerSource::Buffered(mut reader) => {
+                let mut data = Vec::new();
+                reader.read_to_end(&mut data)?;
+                let data = Arc::new(data);
+                let spans = build_line_spans(&data, 0, self.line_number);
+                Ok((
+                    ParallelInput::Bytes {
+                        data: SharedBytes::Owned(data),
+                        spans,
+                        extra_keys: extra_keys.clone(),
+                    },
+                    additional_fields,
+                ))
+            }
+            #[cfg(feature = "mmap")]
+            InnerSource::Mmap(inner) => {
+                let base = inner.cursor;
+                let data = inner.data.clone();
+                let spans = build_line_spans(&data[base..], base, self.line_number);
+                Ok((
+                    ParallelInput::Bytes {
+                        data: SharedBytes::Mmap(data),
+                        spans,
+                        extra_keys: extra_keys.clone(),
+                    },
+                    additional_fields,
+                ))
+            }
+        }
     }
 
     /// Returns the next record in the reader.
@@ -951,19 +1066,60 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
                 continue;
             }
 
-            match self.fill_buffer() {
-                Ok(true) => {
+            match &mut self.inner {
+                InnerSource::Buffered(_) => match self.fill_buffer() {
+                    Ok(true) => {
+                        self.line_number += 1;
+                        if should_skip(&self.buffer) {
+                            continue;
+                        }
+                        let parsed = parse_line_bytes::<R>(
+                            self.buffer.as_bytes(),
+                            self.additional_fields,
+                            &self.extra_keys,
+                            self.line_number,
+                        )
+                        .map(Into::into);
+                        return Some(parsed);
+                    }
+                    Ok(false) => return None,
+                    Err(err) => return Some(Err(err)),
+                },
+                #[cfg(feature = "mmap")]
+                InnerSource::Mmap(inner) => {
+                    if inner.cursor >= inner.data.len() {
+                        return None;
+                    }
+
+                    let data = &inner.data;
+                    let start = inner.cursor;
+                    let rel_end = memchr(b'\n', &data[start..]).map(|idx| start + idx);
+                    let line_end = rel_end.unwrap_or(data.len());
+                    let mut end = line_end;
+
+                    if end > start && data[end - 1] == b'\r' {
+                        end -= 1;
+                    }
+
+                    inner.cursor = rel_end.map(|pos| pos + 1).unwrap_or(data.len());
+
                     self.line_number += 1;
-                    if should_skip(&self.buffer) {
+
+                    let line_bytes = &data[start..end];
+                    if should_skip_bytes(line_bytes) {
                         continue;
                     }
-                    let parsed =
-                        parse_line::<R>(&self.buffer, self.additional_fields, self.line_number)
-                            .map(Into::into);
+
+                    let parsed = parse_line_bytes::<R>(
+                        line_bytes,
+                        self.additional_fields,
+                        &self.extra_keys,
+                        self.line_number,
+                    )
+                    .map(Into::into);
+
                     return Some(parsed);
                 }
-                Ok(false) => return None,
-                Err(err) => return Some(Err(err)),
             }
         }
     }
@@ -998,14 +1154,17 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
                 if inner.cursor >= inner.data.len() {
                     return Ok(false);
                 }
+
                 let data = &inner.data[inner.cursor..];
                 let mut len = 0usize;
+
                 for byte in data {
                     len += 1;
                     if *byte == b'\n' {
                         break;
                     }
                 }
+
                 let (line_bytes, advance) = if len == 0 {
                     (&[][..], 0)
                 } else if data.get(len - 1) == Some(&b'\n') {
@@ -1013,43 +1172,17 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
                 } else {
                     (&data[..len], len)
                 };
+
                 inner.cursor += advance;
                 let line = std::str::from_utf8(line_bytes).map_err(|err| {
                     ReaderError::invalid_encoding(self.line_number + 1, err.to_string())
                 })?;
+
                 self.buffer.clear();
                 self.buffer.push_str(line.trim_end_matches('\r'));
+
                 Ok(!self.buffer.is_empty() || advance > 0)
             }
-        }
-    }
-
-    /// Reads the next line of the reader.
-    ///
-    /// This method is used by [`Reader::par_records`].
-    ///
-    /// # Example
-    ///
-    /// ```rust,no_run,ignore
-    /// use genepred::{Reader, Bed3};
-    ///
-    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let mut reader = Reader::from_path("tests/data/simple.bed")?;
-    ///     let line = reader.read_line_owned()?;
-    ///     println!("{}", line.unwrap());
-    ///     Ok(())
-    /// }
-    /// ```
-    #[cfg(feature = "rayon")]
-    fn read_line_owned(&mut self) -> ReaderResult<Option<String>> {
-        match self.fill_buffer() {
-            Ok(true) => {
-                self.line_number += 1;
-                let line = self.buffer.clone();
-                Ok(Some(line))
-            }
-            Ok(false) => Ok(None),
-            Err(err) => Err(err),
         }
     }
 }
@@ -1129,6 +1262,51 @@ impl<'a, R: BedFormat + Into<GenePred>> Iterator for Records<'a, R> {
     }
 }
 
+/// Line span for parallel parsing
+#[cfg(feature = "rayon")]
+#[derive(Clone)]
+struct LineSpan {
+    line_no: usize,
+    start: usize,
+    end: usize,
+}
+
+/// Shared bytes
+#[cfg(feature = "rayon")]
+#[derive(Clone)]
+enum SharedBytes {
+    #[cfg(feature = "mmap")]
+    Mmap(Arc<memmap2::Mmap>),
+    Owned(Arc<Vec<u8>>),
+}
+
+#[cfg(feature = "rayon")]
+impl SharedBytes {
+    /// Get bytes as slice
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            #[cfg(feature = "mmap")]
+            SharedBytes::Mmap(map) => map.as_ref(),
+            SharedBytes::Owned(bytes) => bytes.as_slice(),
+        }
+    }
+
+    /// Get the slice of the bytes
+    fn slice(&self, start: usize, end: usize) -> &[u8] {
+        &self.as_slice()[start..end]
+    }
+}
+
+#[cfg(feature = "rayon")]
+enum ParallelInput {
+    Preloaded(Vec<GenePred>),
+    Bytes {
+        data: SharedBytes,
+        spans: Vec<LineSpan>,
+        extra_keys: Arc<Vec<Vec<u8>>>,
+    },
+}
+
 /// A parallel iterator over the records in a `Reader`.
 ///
 /// This struct is created by the `par_records` method on `Reader`.
@@ -1136,30 +1314,53 @@ impl<'a, R: BedFormat + Into<GenePred>> Iterator for Records<'a, R> {
 /// This requires the `rayon` feature.
 #[cfg(feature = "rayon")]
 pub struct ParallelRecords<R: BedFormat + Into<GenePred>> {
-    lines: Vec<(usize, String)>,
-    preloaded: Option<Vec<GenePred>>,
+    input: ParallelInput,
     additional_fields: usize,
     _marker: PhantomData<R>,
 }
 
+/// A parallel iterator over chunks of records in a `Reader`.
+///
+/// This struct is created by the `par_chunks` method on `Reader`.
+///
+/// This requires the `rayon` feature.
 #[cfg(feature = "rayon")]
-impl<R: BedFormat + Into<GenePred>> ParallelRecords<R> {
-    /// Parses a single line for parallel processing.
-    ///
-    /// This internal function is used by the parallel iterator implementation
-    /// to parse individual lines in parallel.
-    ///
-    /// # Arguments
-    ///
-    /// * `(line_number, line)` - A tuple containing the line number and line content
-    /// * `additional` - The number of additional fields to expect
-    ///
-    /// # Returns
-    ///
-    /// A `ReaderResult` containing the parsed record
-    fn parse_line((line_number, line): &(usize, String), additional: usize) -> ReaderResult<R> {
-        parse_line::<R>(line, additional, *line_number)
-    }
+pub struct ParallelChunks<R: BedFormat + Into<GenePred>> {
+    inner: ParallelChunksInner<R>,
+    additional_fields: usize,
+    _marker: PhantomData<R>,
+}
+
+/// Inner iterator for parallel parsing
+///
+/// This struct is created by the `par_chunks` method on `Reader`.
+///
+/// This requires the `rayon` feature.
+#[cfg(feature = "rayon")]
+enum ParallelChunksInner<R: BedFormat + Into<GenePred>> {
+    Input {
+        input: ParallelInput,
+        chunk_size: usize,
+    },
+
+    Stream(StreamChunkIter<R>),
+}
+
+/// Streaming iterator for parallel parsing
+///
+/// This struct is created by the `par_chunks` method on `Reader`.
+///
+/// This requires the `rayon` feature.
+#[cfg(feature = "rayon")]
+struct StreamChunkIter<R: BedFormat + Into<GenePred>> {
+    reader: BufReader<Box<dyn Read + Send>>,
+    chunk_size: usize,
+    additional_fields: usize,
+    extra_keys: Arc<Vec<Vec<u8>>>,
+    line_number: usize,
+    chunk_idx: usize,
+    buf: Vec<u8>,
+    _marker: PhantomData<R>,
 }
 
 #[cfg(feature = "rayon")]
@@ -1170,19 +1371,157 @@ impl<R: BedFormat + Into<GenePred> + Send> ParallelIterator for ParallelRecords<
     where
         C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
     {
-        if let Some(records) = self.preloaded {
-            return records
+        match self.input {
+            ParallelInput::Preloaded(records) => records
                 .into_par_iter()
                 .map(ReaderResult::Ok)
-                .drive_unindexed(consumer);
+                .drive_unindexed(consumer),
+            ParallelInput::Bytes {
+                data,
+                spans,
+                extra_keys,
+            } => {
+                let additional = self.additional_fields;
+                spans
+                    .into_par_iter()
+                    .map_with((data, extra_keys), move |(data, extra_keys), span| {
+                        parse_line_bytes::<R>(
+                            data.slice(span.start, span.end),
+                            additional,
+                            extra_keys.as_slice(),
+                            span.line_no,
+                        )
+                        .map(Into::into)
+                    })
+                    .drive_unindexed(consumer)
+            }
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<R: BedFormat + Into<GenePred> + Send> ParallelIterator for ParallelChunks<R> {
+    type Item = (usize, Vec<ReaderResult<GenePred>>);
+
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: rayon::iter::plumbing::UnindexedConsumer<Self::Item>,
+    {
+        match self.inner {
+            ParallelChunksInner::Input { input, chunk_size } => match input {
+                ParallelInput::Preloaded(records) => {
+                    let mut chunked: Vec<Vec<GenePred>> =
+                        Vec::with_capacity((records.len() + chunk_size - 1) / chunk_size);
+                    let mut iter = records.into_iter();
+                    loop {
+                        let mut chunk = Vec::with_capacity(chunk_size.min(iter.size_hint().0));
+                        for _ in 0..chunk_size {
+                            if let Some(record) = iter.next() {
+                                chunk.push(record);
+                            } else {
+                                break;
+                            }
+                        }
+                        if chunk.is_empty() {
+                            break;
+                        }
+                        chunked.push(chunk);
+                    }
+
+                    chunked
+                        .into_par_iter()
+                        .enumerate()
+                        .map(|(chunk_idx, chunk)| {
+                            let parsed =
+                                chunk.into_iter().map(ReaderResult::Ok).collect::<Vec<_>>();
+                            (chunk_idx, parsed)
+                        })
+                        .drive_unindexed(consumer)
+                }
+                ParallelInput::Bytes {
+                    data,
+                    spans,
+                    extra_keys,
+                } => {
+                    let additional = self.additional_fields;
+                    spans
+                        .par_chunks(chunk_size)
+                        .enumerate()
+                        .map_with(
+                            (data, extra_keys),
+                            move |(data, extra_keys), (chunk_idx, chunk)| {
+                                let mut out = Vec::with_capacity(chunk.len());
+                                for span in chunk {
+                                    let parsed = parse_line_bytes::<R>(
+                                        data.slice(span.start, span.end),
+                                        additional,
+                                        extra_keys.as_slice(),
+                                        span.line_no,
+                                    )
+                                    .map(Into::into);
+                                    out.push(parsed);
+                                }
+                                (chunk_idx, out)
+                            },
+                        )
+                        .drive_unindexed(consumer)
+                }
+            },
+
+            ParallelChunksInner::Stream(stream) => stream.par_bridge().drive_unindexed(consumer),
+        }
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<R: BedFormat + Into<GenePred>> Iterator for StreamChunkIter<R> {
+    type Item = (usize, Vec<ReaderResult<GenePred>>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut out = Vec::with_capacity(self.chunk_size);
+
+        while out.len() < self.chunk_size {
+            self.buf.clear();
+            match self.reader.read_until(b'\n', &mut self.buf) {
+                Ok(0) => break,
+                Ok(_) => {
+                    let mut end = self.buf.len();
+                    if end > 0 && self.buf[end - 1] == b'\n' {
+                        end -= 1;
+                    }
+                    if end > 0 && self.buf[end - 1] == b'\r' {
+                        end -= 1;
+                    }
+
+                    self.line_number += 1;
+                    let line = &self.buf[..end];
+                    if should_skip_bytes(line) {
+                        continue;
+                    }
+
+                    let parsed = parse_line_bytes::<R>(
+                        line,
+                        self.additional_fields,
+                        &self.extra_keys,
+                        self.line_number,
+                    )
+                    .map(Into::into);
+                    out.push(parsed);
+                }
+                Err(err) => {
+                    out.push(Err(ReaderError::Io(err)));
+                    break;
+                }
+            }
         }
 
-        self.lines
-            .into_par_iter()
-            .map(|(line, text)| {
-                parse_line::<R>(&text, self.additional_fields, line).map(Into::into)
-            })
-            .drive_unindexed(consumer)
+        if out.is_empty() {
+            None
+        } else {
+            let idx = self.chunk_idx;
+            self.chunk_idx += 1;
+            Some((idx, out))
+        }
     }
 }
 
@@ -1212,16 +1551,83 @@ impl<R: BedFormat + Into<GenePred> + Send> ParallelIterator for ParallelRecords<
 ///     Ok(())
 /// }
 /// ```
-fn parse_line<R: BedFormat>(
+fn _parse_line<R: BedFormat>(
     line: &str,
     additional_fields: usize,
     line_number: usize,
 ) -> ReaderResult<R> {
-    let trimmed = line.trim();
-    let mut fields: Vec<&str> = trimmed
-        .split('\t')
-        .filter(|segment| !segment.is_empty())
-        .collect();
+    let keys = build_extra_keys(R::FIELD_COUNT, additional_fields);
+    parse_line_bytes::<R>(line.as_bytes(), additional_fields, &keys, line_number)
+}
+
+/// Parse a single line of a BED file.
+///
+/// This function is used by [`Reader::parse_line`] and [`Reader::parse_lines`].
+///
+/// # Errors
+///
+/// This function returns an error if the line is empty, or if it has an
+/// unexpected number of fields.
+///
+/// # Example
+///
+/// ```rust,no_run,ignore
+/// use genepred::{Reader, Bed3};
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
+///     let record = reader.parse_line("chr1\t100\t200")?;
+///     println!(
+///         "chrom: {}, start: {}, end: {}",
+///         String::from_utf8_lossy(&record.chrom),
+///         record.start,
+///         record.end
+///     );
+///     Ok(())
+/// }
+/// ```
+fn parse_line_bytes<R: BedFormat>(
+    line: &[u8],
+    additional_fields: usize,
+    extra_keys: &[Vec<u8>],
+    line_number: usize,
+) -> ReaderResult<R> {
+    let mut start = 0usize;
+    let mut end = line.len();
+
+    while start < end && line[start].is_ascii_whitespace() {
+        start += 1;
+    }
+
+    while start < end && line[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start == end {
+        return Err(ReaderError::invalid_field(
+            line_number,
+            "line",
+            "ERROR: encountered empty record".into(),
+        ));
+    }
+
+    let mut fields: Vec<&str> = Vec::new();
+    let mut field_start = start;
+    let expected_fields = R::FIELD_COUNT + additional_fields;
+    fields.reserve(expected_fields.max(4));
+
+    for i in start..=end {
+        if i == end || line[i] == b'\t' {
+            if i > field_start {
+                let slice = &line[field_start..i];
+                let text = std::str::from_utf8(slice)
+                    .map_err(|err| ReaderError::invalid_encoding(line_number, err.to_string()))?;
+                fields.push(text);
+            }
+
+            field_start = i + 1;
+        }
+    }
 
     if fields.is_empty() {
         return Err(ReaderError::invalid_field(
@@ -1231,10 +1637,10 @@ fn parse_line<R: BedFormat>(
         ));
     }
 
-    if fields.len() < R::FIELD_COUNT + additional_fields {
+    if fields.len() < expected_fields {
         return Err(ReaderError::unexpected_field_count(
             line_number,
-            R::FIELD_COUNT + additional_fields,
+            expected_fields,
             fields.len(),
         ));
     }
@@ -1242,16 +1648,77 @@ fn parse_line<R: BedFormat>(
     let extras = if additional_fields == 0 {
         Extras::new()
     } else {
-        let extra_fields = fields.split_off(R::FIELD_COUNT);
-        let mut extras = Extras::new();
-        for (idx, field) in extra_fields.into_iter().enumerate() {
-            let key = (R::FIELD_COUNT + idx + 1).to_string().into_bytes();
+        let mut extras = Extras::with_capacity(additional_fields);
+        for (idx, field) in fields.iter().skip(R::FIELD_COUNT).enumerate() {
+            let field_no = R::FIELD_COUNT + idx + 1;
+            let key = extra_keys
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| itoa_buffer(field_no).to_vec());
+
             extras.insert(key, ExtraValue::Scalar(field.as_bytes().to_vec()));
         }
+
         extras
     };
 
     R::from_fields(&fields[..R::FIELD_COUNT], extras, line_number)
+}
+
+/// Convert a number to a buffer of ASCII digits
+fn itoa_buffer(mut value: usize) -> SmallKeyBuffer {
+    const MAX_LEN: usize = 20; // enough for usize
+
+    let mut buf = [0u8; MAX_LEN];
+    let mut len = 0;
+
+    loop {
+        len += 1;
+        buf[MAX_LEN - len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+
+    SmallKeyBuffer { buf, len }
+}
+
+struct SmallKeyBuffer {
+    buf: [u8; 20],
+    len: usize,
+}
+
+impl SmallKeyBuffer {
+    fn to_vec(&self) -> Vec<u8> {
+        self.buf[self.buf.len() - self.len..].to_vec()
+    }
+}
+
+/// Build extra keys for parallel parsing
+///
+/// This function is used by [`Reader::par_chunks`].
+///
+/// # Example
+///
+/// ```rust,no_run,ignore
+/// use genepred::{Reader, Bed3};
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
+///     let extra_keys = build_extra_keys(Bed3::FIELD_COUNT, reader.additional_fields());
+///     Ok(())
+/// }
+/// ```
+fn build_extra_keys(base_field_count: usize, additional_fields: usize) -> Vec<Vec<u8>> {
+    let mut keys = Vec::with_capacity(additional_fields);
+
+    for idx in 0..additional_fields {
+        let buf = itoa_buffer(base_field_count + idx + 1);
+        keys.push(buf.to_vec());
+    }
+
+    keys
 }
 
 /// Trim a line of a BED file.
@@ -1272,4 +1739,74 @@ fn should_skip(line: &str) -> bool {
         || trimmed.starts_with('#')
         || trimmed.starts_with("track ")
         || trimmed.starts_with("browser ")
+}
+
+/// Returns `true` if the line should be skipped.
+///
+/// This function is used by [`Reader::parse_line`] and [`Reader::parse_lines`].
+#[cfg(feature = "rayon")]
+fn should_skip_bytes(line: &[u8]) -> bool {
+    let mut start = 0usize;
+    let mut end = line.len();
+
+    while start < end && line[start].is_ascii_whitespace() {
+        start += 1;
+    }
+    while start < end && line[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+
+    if start == end {
+        return true;
+    }
+
+    let trimmed = &line[start..end];
+    trimmed.starts_with(b"#") || trimmed.starts_with(b"track ") || trimmed.starts_with(b"browser ")
+}
+
+/// Build line spans for parallel parsing
+///
+/// This function is used by [`Reader::par_chunks`].
+///
+/// # Example
+///
+/// ```rust,no_run,ignore
+/// use genepred::{Reader, Bed3};
+///
+/// fn main() -> Result<(), Box<dyn std::error::Error>> {
+///     let mut reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
+///     let line_spans = build_line_spans(&reader.buffer, 0, reader.line_number);
+///     Ok(())
+/// }
+/// ```
+#[cfg(feature = "rayon")]
+fn build_line_spans(data: &[u8], base_offset: usize, starting_line: usize) -> Vec<LineSpan> {
+    let mut spans = Vec::with_capacity(memchr_iter(b'\n', data).count() + 1);
+    let mut offset = 0usize;
+    let mut line_no = starting_line;
+
+    while offset < data.len() {
+        let line_start = offset;
+        let rel_end = memchr(b'\n', &data[line_start..]).map(|idx| line_start + idx);
+        let line_end = rel_end.unwrap_or(data.len());
+        let mut end = line_end;
+        if end > line_start && data[end - 1] == b'\r' {
+            end -= 1;
+        }
+
+        line_no += 1;
+        let next_offset = rel_end.map(|pos| pos + 1).unwrap_or(data.len());
+
+        if !should_skip_bytes(&data[line_start..end]) {
+            spans.push(LineSpan {
+                line_no,
+                start: base_offset + line_start,
+                end: base_offset + end,
+            });
+        }
+
+        offset = next_offset;
+    }
+
+    spans
 }
