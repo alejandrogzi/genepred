@@ -48,10 +48,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-genepred = "0.0.3"
+genepred = "0.0.4"
 
 # Optional features
-genepred = { version = "0.0.3", features = ["gzip", "zstd", "bz2", "mmap", "rayon"] }
+genepred = { version = "0.0.4", features = ["gzip", "zstd", "bz2", "mmap", "rayon"] }
 ```
 
 ## Usage

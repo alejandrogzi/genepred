@@ -1,6 +1,6 @@
 [package]
 name = "genepred"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 authors = ["alejandrogzi <alejandrxgzi@gmail.com>"]
 license = "MIT"
@@ -25,7 +25,7 @@ compression = ["gzip"]
 rayon = { version = "1.10", optional = true }
 memmap2 = { version = "0.9", optional = true }
 flate2 = { version = "1.0", default-features = false, features = ["rust_backend"], optional = true }
-bzip2 = { version = "0.4", optional = true }
+bzip2 = { version = "0.6", optional = true }
 zstd = { version = "0.13", optional = true }
 memchr = "2.7"
 

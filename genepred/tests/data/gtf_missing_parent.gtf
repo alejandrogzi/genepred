@@ -1,0 +1,5 @@
+chr1	source	gene	100	200	.	+	.	gene_id "g1"; gene_name "GeneOne";
+chr1	source	transcript	100	200	.	+	.	gene_id "g1"; transcript_id "tx1"; gene_name "GeneOne";
+chr1	source	exon	100	150	.	+	.	gene_id "g1"; transcript_id "tx1";
+chr1	source	exon	170	200	.	+	.	gene_id "g1"; transcript_id "tx1";
+chr1	source	CDS	120	180	.	+	0	gene_id "g1"; transcript_id "tx1";

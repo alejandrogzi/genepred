@@ -142,6 +142,48 @@ fn test_reader_gxf_from_path() {
 }
 
 #[test]
+fn test_reader_gxf_skips_missing_parent_attribute() {
+    let path = "tests/data/gtf_missing_parent.gtf";
+    let mut reader: Reader<Gtf> = Reader::from_path(path).unwrap();
+    let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
+
+    assert_eq!(records.len(), 1);
+    let gene = &records[0];
+    assert_eq!(gene.name().unwrap(), b"GeneOne".as_ref());
+    assert_eq!(gene.chrom(), b"chr1".as_ref());
+    assert_eq!(gene.start(), 99);
+    assert_eq!(gene.end(), 200);
+}
+
+#[test]
+fn test_reader_gxf_allows_single_base_feature() {
+    let path = "tests/data/gtf_single_base.gtf";
+    let mut reader: Reader<Gtf> = Reader::from_path(path).unwrap();
+    let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
+
+    assert_eq!(records.len(), 1);
+    let gene = &records[0];
+    assert_eq!(gene.chrom(), b"chr1".as_ref());
+    assert_eq!(gene.start(), 88831746);
+    assert_eq!(gene.end(), 88831747);
+    assert_eq!(gene.block_count().unwrap(), 1);
+    assert_eq!(gene.block_starts().unwrap(), &[88831746]);
+    assert_eq!(gene.block_ends().unwrap(), &[88831747]);
+}
+
+#[test]
+fn test_reader_gxf_negative_stop_codon_extends_thick_start() {
+    let path = "tests/data/gtf_negative_stop_codon.gtf";
+    let mut reader: Reader<Gtf> = Reader::from_path(path).unwrap();
+    let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
+
+    assert_eq!(records.len(), 1);
+    let gene = &records[0];
+    assert_eq!(gene.thick_start().unwrap(), 99);
+    assert_eq!(gene.thick_end().unwrap(), 190);
+}
+
+#[test]
 fn test_reader_bed3_from_path() {
     let path = "tests/data/bed3.bed";
     let mut reader: Reader<Bed3> = Reader::from_path(path).unwrap();

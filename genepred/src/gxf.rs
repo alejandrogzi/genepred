@@ -47,7 +47,7 @@ pub trait GxfFormat {
     const ATTR_SEPARATOR: u8;
     /// Default attribute used to group related rows.
     const DEFAULT_PARENT_ATTRIBUTE: &'static [u8];
-    /// Human readable format name (for error messages).
+    /// Human readable format name (for error messages)
     const TYPE_NAME: &'static str;
 }
 
@@ -297,22 +297,14 @@ where
         }
 
         let record = GxfRecord::parse(&line, line_number, F::ATTR_SEPARATOR)?;
-        let parent_value = record
+        let Some(parent_value) = record
             .attributes
             .get(parent_attr.as_ref())
             .and_then(ExtraValue::first)
-            .ok_or_else(|| {
-                ReaderError::invalid_field(
-                    line_number,
-                    "attributes",
-                    format!(
-                        "ERROR: missing '{}' attribute required to group {} records",
-                        String::from_utf8_lossy(parent_attr.as_ref()),
-                        F::TYPE_NAME
-                    ),
-                )
-            })?
-            .to_vec();
+        else {
+            continue;
+        };
+        let parent_value = parent_value.to_vec();
 
         let entry = transcripts
             .entry(parent_value.clone())
@@ -402,11 +394,11 @@ impl GxfRecord {
                 format!("ERROR: could not parse '{}' as integer", end_raw),
             )
         })?;
-        if end <= start {
+        if end < start {
             return Err(ReaderError::invalid_field(
                 line_number,
                 "coordinates",
-                format!("ERROR: end ({end}) must be greater than start ({start})"),
+                format!("ERROR: end ({end}) must be >= start ({start})"),
             ));
         }
 
@@ -426,6 +418,7 @@ impl GxfRecord {
     }
 }
 
+/// Returns a `ReaderError` for a missing field.
 fn missing(field: &'static str, line: usize) -> ReaderError {
     ReaderError::invalid_field(
         line,
@@ -491,6 +484,7 @@ impl TranscriptBuilder {
                 ),
             ));
         }
+
         if self.strand != strand {
             return Err(ReaderError::invalid_field(
                 line,
@@ -498,6 +492,7 @@ impl TranscriptBuilder {
                 "ERROR: grouped records span multiple strands".into(),
             ));
         }
+
         self.observed_start = self.observed_start.min(start);
         self.observed_end = self.observed_end.max(end);
         Ok(())
@@ -561,6 +556,7 @@ impl TranscriptBuilder {
             b"transcript_name".as_ref(),
             b"Name".as_ref(),
             b"gene_name".as_ref(),
+            b"gene_id".as_ref(),
         ] {
             if let Some(value) = attributes.get(candidate).and_then(ExtraValue::first) {
                 self.name = Some(value.to_vec());
@@ -580,6 +576,7 @@ impl TranscriptBuilder {
         let (span_start, span_end) = self
             .transcript_extent
             .unwrap_or((self.observed_start, self.observed_end));
+
         let mut gene = GenePred::from_coords(self.chrom, span_start, span_end, self.extras);
         gene.set_name(self.name.or(Some(parent_name)));
         gene.set_strand(Some(self.strand));
@@ -613,12 +610,19 @@ impl TranscriptBuilder {
         }
 
         if !(self.start_codons.is_empty() && self.stop_codons.is_empty()) {
-            let codon_start = self
-                .start_codons
-                .iter()
-                .map(|interval| interval.start)
-                .min();
-            let codon_end = self.stop_codons.iter().map(|interval| interval.end).max();
+            let mut codon_start: Option<u64> = None;
+            let mut codon_end: Option<u64> = None;
+
+            for interval in self.start_codons.iter().chain(self.stop_codons.iter()) {
+                codon_start = Some(match codon_start {
+                    Some(current) => current.min(interval.start),
+                    None => interval.start,
+                });
+                codon_end = Some(match codon_end {
+                    Some(current) => current.max(interval.end),
+                    None => interval.end,
+                });
+            }
 
             coding_bounds = match (coding_bounds, codon_start, codon_end) {
                 (Some((cs, ce)), Some(s), Some(e)) => Some((cs.min(s), ce.max(e))),

@@ -1,0 +1,2 @@
+chr1	source	five_prime_utr	88831747	88831747	.	-	.	gene_id "g1"; transcript_id "tx1"; gene_name "GeneOne";
+chr1	source	exon	88831747	88831747	.	-	.	gene_id "g1"; transcript_id "tx1";
