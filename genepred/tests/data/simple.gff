@@ -1,5 +1,5 @@
 ##gff-version 3
 chr1	source	mRNA	100	200	.	+	.	ID=tx1;Name=Tx1
-chr1	source	exon	100	150	.	+	.	ID=tx1
-chr1	source	exon	170	200	.	+	.	ID=tx1
-chr1	source	CDS	120	180	.	+	0	ID=tx1
+chr1	source	exon	100	150	.	+	.	Parent=tx1
+chr1	source	exon	170	200	.	+	.	Parent=tx1
+chr1	source	CDS	120	180	.	+	0	Parent=tx1
