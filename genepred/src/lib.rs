@@ -17,7 +17,7 @@
 //!
 //! ```rust,no_run
 //! // Enable both "rayon" and "mmap" features in Cargo.toml
-//! use genepred::{Reader, Bed12, Gtf};
+//! use genepred::{Reader, Bed12, Gtf, Strand};
 //! use rayon::prelude::*;
 //!
 //! fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,7 +27,7 @@
 //!     if let Ok(records) = bed_reader.par_records() {
 //!         let count = records
 //!             .filter_map(Result::ok)
-//!             .filter(|r| r.strand.map(|s| s.is_plus()).unwrap_or(false))
+//!             .filter(|r| r.strand.map(|s| s == Strand::Forward).unwrap_or(false))
 //!             .count();
 //!         println!("Found {} records on plus strand", count);
 //!     }

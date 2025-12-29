@@ -908,10 +908,8 @@ fn build_attributes(
     if allow_extra_key(b"transcript_id", options) {
         pairs.push((b"transcript_id".to_vec(), transcript.clone()));
     }
-    if !is_gtf {
-        if allow_extra_key(b"ID", options) {
-            pairs.push((b"ID".to_vec(), transcript.clone()));
-        }
+    if !is_gtf && allow_extra_key(b"ID", options) {
+        pairs.push((b"ID".to_vec(), transcript.clone()));
     }
 
     let mut rest: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(record.extras.len());
@@ -934,6 +932,8 @@ fn build_attributes(
     pairs
 }
 
+/// Returns true if the key is explicitly allowed, or if no allowlist is
+/// configured. Otherwise, returns false.
 fn allow_extra_key(key: &[u8], options: &WriterOptions) -> bool {
     match &options.extras_allowlist {
         Some(allowlist) => allowlist.contains(key),

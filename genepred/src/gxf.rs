@@ -248,10 +248,7 @@ fn compression_from_extension(path: &Path) -> Compression {
 ///
 /// A `ReaderResult` containing a `Vec<GenePred>` of the parsed records, or a
 /// `ReaderError` if the stream could not be read or parsed.
-fn parse_gxf_stream<F, R>(
-    mut reader: R,
-    options: &ReaderOptions<'_>,
-) -> ReaderResult<Vec<GenePred>>
+fn parse_gxf_stream<F, R>(mut reader: R, options: &ReaderOptions<'_>) -> ReaderResult<Vec<GenePred>>
 where
     F: GxfFormat,
     R: BufRead,
