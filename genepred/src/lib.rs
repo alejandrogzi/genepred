@@ -15,7 +15,7 @@
 //!
 //! ## Usage
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! // Enable both "rayon" and "mmap" features in Cargo.toml
 //! use genepred::{Reader, Bed12, Gtf, Strand};
 //! use rayon::prelude::*;
