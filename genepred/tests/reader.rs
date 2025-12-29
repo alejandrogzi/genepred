@@ -3,7 +3,7 @@ use bzip2::write::BzEncoder;
 #[cfg(feature = "bz2")]
 use bzip2::Compression as BzCompression;
 use genepred::reader::Reader;
-use genepred::{Bed12, Bed3, Bed4, Bed6, ExtraValue, Gff, Gtf, Strand};
+use genepred::{Bed12, Bed3, Bed4, Bed6, ExtraValue, Gff, Gtf, ReaderOptions, Strand};
 #[cfg(feature = "rayon")]
 use rayon::prelude::*;
 #[cfg(any(feature = "bz2", feature = "zstd"))]
@@ -230,7 +230,8 @@ fn test_reader_bed12_from_path() {
 #[test]
 fn test_reader_bed12_with_additional_fields() {
     let path = "tests/data/bed12_extra.bed";
-    let mut reader: Reader<Bed12> = Reader::from_path_with_additional_fields(path, 2).unwrap();
+    let options = ReaderOptions::new().additional_fields(2);
+    let mut reader: Reader<Bed12> = Reader::from_path_custom_fields(path, options).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
 
     assert_eq!(records.len(), 1);

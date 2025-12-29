@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fmt;
 use std::io::{self, BufWriter, Write};
 use std::marker::PhantomData;
@@ -71,11 +72,14 @@ pub struct Writer<F> {
 }
 
 /// Configuration for writer behaviour.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct WriterOptions {
     /// Whether to emit non-numeric extra fields when writing BED outputs.
-    /// Numeric extras (those with numeric keys) are always written.
     pub include_non_numeric_extras: bool,
+    /// Whether to emit numeric extra fields when writing BED outputs.
+    pub include_numeric_extras: bool,
+    /// Optional allowlist of extras to emit for all formats.
+    extras_allowlist: Option<HashSet<Vec<u8>>>,
 }
 
 #[allow(clippy::derivable_impls)]
@@ -83,6 +87,8 @@ impl Default for WriterOptions {
     fn default() -> Self {
         Self {
             include_non_numeric_extras: false,
+            include_numeric_extras: true,
+            extras_allowlist: None,
         }
     }
 }
@@ -96,6 +102,32 @@ impl WriterOptions {
     /// Controls whether non-numeric extras are emitted for BED outputs.
     pub fn include_non_numeric_extras(mut self, include: bool) -> Self {
         self.include_non_numeric_extras = include;
+        self
+    }
+
+    /// Controls whether numeric extras are emitted for BED outputs.
+    pub fn include_numeric_extras(mut self, include: bool) -> Self {
+        self.include_numeric_extras = include;
+        self
+    }
+
+    /// Limits emitted extras to the provided keys for all formats.
+    pub fn extras_allowlist<I, K>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = K>,
+        K: Into<Vec<u8>>,
+    {
+        let mut allowlist = HashSet::new();
+        for key in keys {
+            allowlist.insert(key.into());
+        }
+        self.extras_allowlist = Some(allowlist);
+        self
+    }
+
+    /// Clears any extras allowlist.
+    pub fn clear_extras_allowlist(mut self) -> Self {
+        self.extras_allowlist = None;
         self
     }
 }
@@ -264,12 +296,7 @@ impl TargetFormat for Bed3 {
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_bed_core(
-            record,
-            writer,
-            BedFields::Bed3,
-            options.include_non_numeric_extras,
-        )
+        write_bed_core(record, writer, BedFields::Bed3, options)
     }
 }
 
@@ -280,12 +307,7 @@ impl TargetFormat for Bed4 {
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_bed_core(
-            record,
-            writer,
-            BedFields::Bed4,
-            options.include_non_numeric_extras,
-        )
+        write_bed_core(record, writer, BedFields::Bed4, options)
     }
 }
 
@@ -296,12 +318,7 @@ impl TargetFormat for Bed5 {
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_bed_core(
-            record,
-            writer,
-            BedFields::Bed5,
-            options.include_non_numeric_extras,
-        )
+        write_bed_core(record, writer, BedFields::Bed5, options)
     }
 }
 
@@ -312,12 +329,7 @@ impl TargetFormat for Bed6 {
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_bed_core(
-            record,
-            writer,
-            BedFields::Bed6,
-            options.include_non_numeric_extras,
-        )
+        write_bed_core(record, writer, BedFields::Bed6, options)
     }
 }
 
@@ -328,12 +340,7 @@ impl TargetFormat for Bed8 {
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_bed_core(
-            record,
-            writer,
-            BedFields::Bed8,
-            options.include_non_numeric_extras,
-        )
+        write_bed_core(record, writer, BedFields::Bed8, options)
     }
 }
 
@@ -344,12 +351,7 @@ impl TargetFormat for Bed9 {
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_bed_core(
-            record,
-            writer,
-            BedFields::Bed9,
-            options.include_non_numeric_extras,
-        )
+        write_bed_core(record, writer, BedFields::Bed9, options)
     }
 }
 
@@ -360,12 +362,7 @@ impl TargetFormat for Bed12 {
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_bed_core(
-            record,
-            writer,
-            BedFields::Bed12,
-            options.include_non_numeric_extras,
-        )
+        write_bed_core(record, writer, BedFields::Bed12, options)
     }
 }
 
@@ -374,9 +371,9 @@ impl TargetFormat for crate::gxf::Gtf {
     fn write_record_with_options<W: Write>(
         record: &GenePred,
         writer: &mut W,
-        _options: &WriterOptions,
+        options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_gxf(record, writer, GxfKind::Gtf)
+        write_gxf(record, writer, GxfKind::Gtf, options)
     }
 }
 
@@ -385,9 +382,9 @@ impl TargetFormat for crate::gxf::Gff {
     fn write_record_with_options<W: Write>(
         record: &GenePred,
         writer: &mut W,
-        _options: &WriterOptions,
+        options: &WriterOptions,
     ) -> WriterResult<()> {
-        write_gxf(record, writer, GxfKind::Gff)
+        write_gxf(record, writer, GxfKind::Gff, options)
     }
 }
 
@@ -410,7 +407,7 @@ fn write_bed_core<W: Write>(
     record: &GenePred,
     writer: &mut W,
     kind: BedFields,
-    include_non_numeric_extras: bool,
+    options: &WriterOptions,
 ) -> WriterResult<()> {
     if record.chrom.is_empty() {
         return Err(WriterError::MissingField("chrom"));
@@ -424,7 +421,7 @@ fn write_bed_core<W: Write>(
 
     match kind {
         BedFields::Bed3 => {
-            write_bed_extras(writer, &record.extras, include_non_numeric_extras)?;
+            write_bed_extras(writer, &record.extras, options)?;
             return Ok(());
         }
         BedFields::Bed4
@@ -508,7 +505,7 @@ fn write_bed_core<W: Write>(
         writer.write_all(b",")?;
     }
 
-    write_bed_extras(writer, &record.extras, include_non_numeric_extras)?;
+    write_bed_extras(writer, &record.extras, options)?;
     Ok(())
 }
 
@@ -549,7 +546,7 @@ fn derive_exons(record: &GenePred) -> Vec<(u64, u64)> {
 fn write_bed_extras<W: Write>(
     writer: &mut W,
     extras: &Extras,
-    include_non_numeric: bool,
+    options: &WriterOptions,
 ) -> WriterResult<()> {
     if extras.is_empty() {
         writer.write_all(b"\n")?;
@@ -560,13 +557,18 @@ fn write_bed_extras<W: Write>(
     let mut non_numeric: Vec<(&[u8], &ExtraValue)> = Vec::new();
 
     for (key, value) in extras {
+        if !allow_extra_key(key, options) {
+            continue;
+        }
         if let Ok(text) = std::str::from_utf8(key) {
             if let Ok(idx) = text.parse::<u64>() {
-                numeric.push((idx, value));
+                if options.include_numeric_extras {
+                    numeric.push((idx, value));
+                }
                 continue;
             }
         }
-        if include_non_numeric {
+        if options.include_non_numeric_extras {
             non_numeric.push((key.as_slice(), value));
         }
     }
@@ -600,14 +602,19 @@ enum GxfKind {
 ///
 /// This function generates multiple feature lines: transcript/mRNA, exons,
 /// CDS segments, start codon, and stop codon as appropriate.
-fn write_gxf<W: Write>(record: &GenePred, writer: &mut W, kind: GxfKind) -> WriterResult<()> {
+fn write_gxf<W: Write>(
+    record: &GenePred,
+    writer: &mut W,
+    kind: GxfKind,
+    options: &WriterOptions,
+) -> WriterResult<()> {
     if record.chrom.is_empty() {
         return Err(WriterError::MissingField("chrom"));
     }
 
     let mut exons = derive_exons(record);
     let strand = record.strand.unwrap_or(Strand::Unknown);
-    let mut attrs = build_attributes(record, matches!(kind, GxfKind::Gtf));
+    let mut attrs = build_attributes(record, matches!(kind, GxfKind::Gtf), options);
 
     let attrs = match kind {
         GxfKind::Gtf => render_gtf_attributes(&mut attrs),
@@ -869,7 +876,11 @@ fn coding_span(coding_exons: &[(u64, u64)]) -> Option<(u64, u64)> {
 /// assert!(gff_attrs.iter().any(|(k, v)| k == b"ID" && v == b"gene1"));
 /// assert!(gff_attrs.iter().any(|(k, v)| k == b"gene_id" && v == b"GENE1"));
 /// ```
-fn build_attributes(record: &GenePred, is_gtf: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn build_attributes(
+    record: &GenePred,
+    is_gtf: bool,
+    options: &WriterOptions,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
     let transcript = record
         .extras
         .get(if is_gtf {
@@ -890,10 +901,14 @@ fn build_attributes(record: &GenePred, is_gtf: bool) -> Vec<(Vec<u8>, Vec<u8>)> 
         .unwrap_or_else(|| transcript.clone());
 
     let mut pairs = Vec::with_capacity(record.extras.len() + 3);
-    // gene_id and transcript_id always first for deterministic output
-    pairs.push((b"gene_id".to_vec(), gene_id.clone()));
-    pairs.push((b"transcript_id".to_vec(), transcript.clone()));
-    if !is_gtf {
+    // gene_id and transcript_id are emitted first (when allowed) for deterministic output
+    if allow_extra_key(b"gene_id", options) {
+        pairs.push((b"gene_id".to_vec(), gene_id.clone()));
+    }
+    if allow_extra_key(b"transcript_id", options) {
+        pairs.push((b"transcript_id".to_vec(), transcript.clone()));
+    }
+    if !is_gtf && allow_extra_key(b"ID", options) {
         pairs.push((b"ID".to_vec(), transcript.clone()));
     }
 
@@ -905,6 +920,9 @@ fn build_attributes(record: &GenePred, is_gtf: bool) -> Vec<(Vec<u8>, Vec<u8>)> 
         if !is_gtf && (key.as_slice() == b"ID" || key.as_slice() == b"Parent") {
             continue;
         }
+        if !allow_extra_key(key, options) {
+            continue;
+        }
         let rendered = render_value(value);
         rest.push((key.clone(), rendered));
     }
@@ -912,6 +930,15 @@ fn build_attributes(record: &GenePred, is_gtf: bool) -> Vec<(Vec<u8>, Vec<u8>)> 
     rest.sort_by(|a, b| a.0.cmp(&b.0));
     pairs.extend(rest);
     pairs
+}
+
+/// Returns true if the key is explicitly allowed, or if no allowlist is
+/// configured. Otherwise, returns false.
+fn allow_extra_key(key: &[u8], options: &WriterOptions) -> bool {
+    match &options.extras_allowlist {
+        Some(allowlist) => allowlist.contains(key),
+        None => true,
+    }
 }
 
 /// Renders attribute pairs in GTF format.

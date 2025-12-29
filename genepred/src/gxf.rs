@@ -1,7 +1,6 @@
 #[cfg(feature = "mmap")]
 use std::io::Cursor;
 use std::{
-    borrow::Cow,
     collections::{hash_map::Entry, HashMap},
     fmt,
     fs::File,
@@ -22,7 +21,7 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 use crate::{
     bed::BedFormat,
     genepred::{ExtraValue, Extras, GenePred},
-    reader::{ReaderError, ReaderResult},
+    reader::{ReaderError, ReaderOptions, ReaderResult},
     strand::Strand,
 };
 
@@ -47,61 +46,28 @@ pub trait GxfFormat {
     const ATTR_SEPARATOR: u8;
     /// Default attribute used to group related rows.
     const DEFAULT_PARENT_ATTRIBUTE: &'static [u8];
-    /// Human readable format name (for error messages)
+    /// Default attribute used to group child rows.
+    const DEFAULT_CHILD_ATTRIBUTE: &'static [u8];
+    /// Default feature used to identify parent records.
+    const DEFAULT_PARENT_FEATURE: &'static [u8];
+    /// Human readable format name (for error messages).
     const TYPE_NAME: &'static str;
 }
 
 impl GxfFormat for Gtf {
     const ATTR_SEPARATOR: u8 = b' ';
     const DEFAULT_PARENT_ATTRIBUTE: &'static [u8] = b"transcript_id";
+    const DEFAULT_CHILD_ATTRIBUTE: &'static [u8] = b"transcript_id";
+    const DEFAULT_PARENT_FEATURE: &'static [u8] = b"transcript";
     const TYPE_NAME: &'static str = "GTF";
 }
 
 impl GxfFormat for Gff {
     const ATTR_SEPARATOR: u8 = b'=';
     const DEFAULT_PARENT_ATTRIBUTE: &'static [u8] = b"ID";
+    const DEFAULT_CHILD_ATTRIBUTE: &'static [u8] = b"Parent";
+    const DEFAULT_PARENT_FEATURE: &'static [u8] = b"mRNA";
     const TYPE_NAME: &'static str = "GFF";
-}
-
-/// Configuration options for parsing GXF records into `GenePred`s.
-///
-/// # Example
-///
-/// ```
-/// use genepred::gxf::GxfOptions;
-///
-/// let options = GxfOptions::new()
-///     .parent_attribute(b"Parent");
-/// ```
-#[derive(Clone, Debug, Default)]
-pub struct GxfOptions<'a> {
-    parent_attribute: Option<Cow<'a, [u8]>>,
-}
-
-impl<'a> GxfOptions<'a> {
-    /// Creates a new options builder.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Overrides the attribute used to group related lines.
-    ///
-    /// By default the format specific attribute (e.g. `transcript_id`) is used.
-    pub fn parent_attribute<P>(mut self, attribute: P) -> Self
-    where
-        P: Into<Cow<'a, [u8]>>,
-    {
-        self.parent_attribute = Some(attribute.into());
-        self
-    }
-
-    /// Returns the resolved parent attribute.
-    fn resolved_parent<'b, F: GxfFormat>(&'b self) -> Cow<'b, [u8]> {
-        self.parent_attribute
-            .as_ref()
-            .map(|attr| Cow::Borrowed(attr.as_ref()))
-            .unwrap_or_else(|| Cow::Borrowed(F::DEFAULT_PARENT_ATTRIBUTE))
-    }
 }
 
 /// Reads a GXF (GTF/GFF) file and produces fully aggregated `GenePred` records.
@@ -119,7 +85,10 @@ impl<'a> GxfOptions<'a> {
 ///
 /// A `ReaderResult` containing a `Vec<GenePred>` of the parsed records, or a
 /// `ReaderError` if the file could not be read or parsed.
-pub(crate) fn read_gxf_file<F, P>(path: P, options: &GxfOptions<'_>) -> ReaderResult<Vec<GenePred>>
+pub(crate) fn read_gxf_file<F, P>(
+    path: P,
+    options: &ReaderOptions<'_>,
+) -> ReaderResult<Vec<GenePred>>
 where
     F: GxfFormat,
     P: AsRef<Path>,
@@ -144,7 +113,10 @@ where
 ///
 /// A `ReaderResult` containing a `Vec<GenePred>` of the parsed records, or a
 /// `ReaderError` if the file could not be read or parsed.
-pub(crate) fn read_gxf_mmap<F, P>(path: P, options: &GxfOptions<'_>) -> ReaderResult<Vec<GenePred>>
+pub(crate) fn read_gxf_mmap<F, P>(
+    path: P,
+    options: &ReaderOptions<'_>,
+) -> ReaderResult<Vec<GenePred>>
 where
     F: GxfFormat,
     P: AsRef<Path>,
@@ -276,14 +248,17 @@ fn compression_from_extension(path: &Path) -> Compression {
 ///
 /// A `ReaderResult` containing a `Vec<GenePred>` of the parsed records, or a
 /// `ReaderError` if the stream could not be read or parsed.
-fn parse_gxf_stream<F, R>(mut reader: R, options: &GxfOptions<'_>) -> ReaderResult<Vec<GenePred>>
+fn parse_gxf_stream<F, R>(mut reader: R, options: &ReaderOptions<'_>) -> ReaderResult<Vec<GenePred>>
 where
     F: GxfFormat,
     R: BufRead,
 {
     let mut line = String::with_capacity(2048);
     let mut line_number = 0usize;
-    let parent_attr = options.resolved_parent::<F>();
+    let parent_attr = options.resolved_parent_attribute::<F>();
+    let child_attr = options.resolved_child_attribute::<F>();
+    let parent_feature = options.resolved_parent_feature::<F>();
+    let child_features = options.child_features_ref();
     let mut transcripts: HashMap<Vec<u8>, TranscriptBuilder> = HashMap::new();
 
     loop {
@@ -297,9 +272,26 @@ where
         }
 
         let record = GxfRecord::parse(&line, line_number, F::ATTR_SEPARATOR)?;
+        let is_parent_feature = eq_ignore_ascii(&record.feature, parent_feature.as_ref());
+        if !is_parent_feature {
+            if let Some(features) = child_features {
+                if !features
+                    .iter()
+                    .any(|feature| eq_ignore_ascii(&record.feature, feature.as_ref()))
+                {
+                    continue;
+                }
+            }
+        }
+
+        let attribute_key = if is_parent_feature {
+            parent_attr.as_ref()
+        } else {
+            child_attr.as_ref()
+        };
         let Some(parent_value) = record
             .attributes
-            .get(parent_attr.as_ref())
+            .get(attribute_key)
             .and_then(ExtraValue::first)
         else {
             continue;
@@ -317,7 +309,7 @@ where
             record.end,
             line_number,
         )?;
-        entry.absorb_feature(&record.feature, record.start, record.end);
+        entry.absorb_feature(&record.feature, record.start, record.end, is_parent_feature);
         entry.merge_attributes(&record.attributes);
         entry.update_name(&record.attributes, &parent_value);
     }
@@ -502,8 +494,8 @@ impl TranscriptBuilder {
     ///
     /// This method categorizes features like "exon", "cds", "start_codon",
     /// and "stop_codon" and stores their intervals.
-    fn absorb_feature(&mut self, feature: &[u8], start: u64, end: u64) {
-        if eq_ignore_ascii(feature, b"transcript") || eq_ignore_ascii(feature, b"mrna") {
+    fn absorb_feature(&mut self, feature: &[u8], start: u64, end: u64, is_parent: bool) {
+        if is_parent {
             self.transcript_extent = Some(match self.transcript_extent {
                 Some((current_start, current_end)) => {
                     (current_start.min(start), current_end.max(end))
@@ -516,7 +508,7 @@ impl TranscriptBuilder {
         let interval = Interval { start, end };
         if eq_ignore_ascii(feature, b"exon") {
             self.exons.push(interval);
-        } else if eq_ignore_ascii(feature, b"cds") || eq_ignore_ascii(feature, b"CDS") {
+        } else if eq_ignore_ascii(feature, b"cds") {
             self.cds.push(interval);
         } else if eq_ignore_ascii(feature, b"start_codon") {
             self.start_codons.push(interval);

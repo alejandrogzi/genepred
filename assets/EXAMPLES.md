@@ -31,18 +31,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = Reader::<Bed6>::from_path("data/genes.bed")?;
     for record in reader.records() {
         let record = record?;
-        let name = record.name.unwrap_or(b"<unknown>".to_vec());
+        let name = record.name().unwrap_or(b"<unknown>");
         let strand = record
-            .strand
+            .strand()
             .map(|s| s.to_string())
             .unwrap_or_else(|| ".".to_string());
         println!(
             "Gene: {} on {} strand at {}:{}-{}",
-            String::from_utf8_lossy(&name),
+            String::from_utf8_lossy(name),
             strand,
-            String::from_utf8_lossy(&record.chrom),
-            record.start,
-            record.end
+            String::from_utf8_lossy(record.chrom()),
+            record.start(),
+            record.end()
         );
     }
     Ok(())
@@ -60,10 +60,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut reader = Reader::<Bed12>::from_path("data/transcripts.bed")?;
     for record in reader.records() {
         let record = record?;
-        let name = record.name.unwrap_or(b"<unknown>".to_vec());
+        let name = record.name().unwrap_or(b"<unknown>");
         println!(
             "Transcript: {} with {} exons",
-            String::from_utf8_lossy(&name),
+            String::from_utf8_lossy(name),
             record.exon_count()
         );
         for (i, (exon_start, exon_end)) in record.exons().iter().enumerate() {
@@ -112,14 +112,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for record in reader.records() {
         let record = record?;
-        let name = record.name.unwrap_or(b"<unknown>".to_vec());
-        println!("Gene: {}", String::from_utf8_lossy(&name));
+        let name = record.name().unwrap_or(b"<unknown>");
+        println!("Gene: {}", String::from_utf8_lossy(name));
 
         // Additional fields are stored in extras with numeric keys
-        if let Some(field1) = record.extras.get(&b"7".to_vec()) {
+        if let Some(field1) = record.extras().get(&b"7".to_vec()) {
             println!("Custom field 1: {}", field1);
         }
-        if let Some(field2) = record.extras.get(&b"8".to_vec()) {
+        if let Some(field2) = record.extras().get(&b"8".to_vec()) {
             println!("Custom field 2: {}", field2);
         }
     }
@@ -141,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let record = record?;
         println!(
             "Gene: {} with {} exons",
-            String::from_utf8_lossy(&record.name.unwrap_or(b"<unknown>".to_vec())),
+            String::from_utf8_lossy(record.name().unwrap_or(b"<unknown>")),
             record.exon_count()
         );
     }
@@ -158,8 +158,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let record = record?;
         println!(
             "Gene: {} on {} strand",
-            String::from_utf8_lossy(&record.name.unwrap_or(b"<unknown>".to_vec())),
-            record.strand.map(|s| s.to_string()).unwrap_or_else(|| ".".to_string())
+            String::from_utf8_lossy(record.name().unwrap_or(b"<unknown>")),
+            record.strand().map(|s| s.to_string()).unwrap_or_else(|| ".".to_string())
         );
     }
     Ok(())
@@ -186,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let record = record?;
         println!(
             "Record: {}",
-            String::from_utf8_lossy(&record.name.unwrap_or(b"<unknown>".to_vec()))
+            String::from_utf8_lossy(record.name().unwrap_or(b"<unknown>"))
         );
     }
     Ok(())
@@ -249,7 +249,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Process record in parallel
                     println!(
                         "Record: {}",
-                        String::from_utf8_lossy(&record.name.unwrap_or(b"<unknown>".to_vec()))
+                        String::from_utf8_lossy(record.name().unwrap_or(b"<unknown>"))
                     );
                     counter.fetch_add(1, Ordering::Relaxed);
                 }
@@ -277,7 +277,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Ok(records) = bed_reader.par_records() {
         let count = records
             .filter_map(Result::ok)
-            .filter(|r| r.strand.map(|s| s.is_plus()).unwrap_or(false))
+            .filter(|r| r.strand().map(|s| matches!(s, Strand::Forward)).unwrap_or(false))
             .count();
         println!("Found {} records on plus strand", count);
     }

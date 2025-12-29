@@ -1,7 +1,7 @@
 use genepred::{
     genepred::{ExtraValue, Extras, GenePred},
     strand::Strand,
-    Bed12, Bed3, Gff, Gtf, Reader, Writer, WriterOptions,
+    Bed12, Bed3, Gff, Gtf, Reader, ReaderOptions, Writer, WriterOptions,
 };
 #[cfg(any(feature = "bz2", feature = "zstd"))]
 use tempfile::tempdir;
@@ -116,6 +116,39 @@ fn write_bed3_orders_numeric_extras() {
 }
 
 #[test]
+fn write_bed3_can_disable_numeric_extras() {
+    let mut extras = Extras::new();
+    extras.insert(b"1".to_vec(), ExtraValue::Scalar(b"one".to_vec()));
+    extras.insert(b"note".to_vec(), ExtraValue::Scalar(b"keep".to_vec()));
+    let gene = GenePred::from_coords(b"chr4".to_vec(), 10, 20, extras);
+
+    let mut buf = Vec::new();
+    let opts = WriterOptions::new()
+        .include_non_numeric_extras(true)
+        .include_numeric_extras(false);
+    Writer::<Bed3>::from_record_with_options(&gene, &mut buf, &opts).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    assert_eq!(text.trim_end(), "chr4\t10\t20\tnote=keep");
+}
+
+#[test]
+fn write_bed3_allowlist_filters_extras() {
+    let mut extras = Extras::new();
+    extras.insert(b"1".to_vec(), ExtraValue::Scalar(b"one".to_vec()));
+    extras.insert(b"2".to_vec(), ExtraValue::Scalar(b"two".to_vec()));
+    extras.insert(b"note".to_vec(), ExtraValue::Scalar(b"keep".to_vec()));
+    let gene = GenePred::from_coords(b"chr4".to_vec(), 10, 20, extras);
+
+    let mut buf = Vec::new();
+    let opts = WriterOptions::new()
+        .include_non_numeric_extras(true)
+        .extras_allowlist([b"2".as_ref(), b"note".as_ref()]);
+    Writer::<Bed3>::from_record_with_options(&gene, &mut buf, &opts).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    assert_eq!(text.trim_end(), "chr4\t10\t20\ttwo\tnote=keep");
+}
+
+#[test]
 fn write_bed3_skips_non_numeric_by_default() {
     let mut extras = Extras::new();
     extras.insert(b"note".to_vec(), ExtraValue::Scalar(b"keep".to_vec()));
@@ -128,9 +161,34 @@ fn write_bed3_skips_non_numeric_by_default() {
 }
 
 #[test]
+fn write_gtf_allowlist_filters_attributes() {
+    let mut extras = Extras::new();
+    extras.insert(b"gene_id".to_vec(), ExtraValue::Scalar(b"gene1".to_vec()));
+    extras.insert(
+        b"transcript_id".to_vec(),
+        ExtraValue::Scalar(b"tx1".to_vec()),
+    );
+    extras.insert(b"tag".to_vec(), ExtraValue::Scalar(b"keep".to_vec()));
+    let mut gene = GenePred::from_coords(b"chr6".to_vec(), 50, 100, extras);
+    gene.set_name(Some(b"tx1".to_vec()));
+    gene.set_strand(Some(Strand::Forward));
+
+    let mut buf = Vec::new();
+    let opts = WriterOptions::new().extras_allowlist([b"tag".as_ref()]);
+    Writer::<Gtf>::from_record_with_options(&gene, &mut buf, &opts).unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    let first_line = text.lines().next().unwrap();
+    let attrs = first_line.split('\t').last().unwrap();
+    assert!(attrs.contains("tag \"keep\""));
+    assert!(!attrs.contains("gene_id"));
+    assert!(!attrs.contains("transcript_id"));
+}
+
+#[test]
 fn write_gtf_gene_transcript_first() {
     let path = "tests/data/bed12_extra.bed";
-    let mut reader: Reader<Bed12> = Reader::from_path_with_additional_fields(path, 2).unwrap();
+    let options = ReaderOptions::new().additional_fields(2);
+    let mut reader: Reader<Bed12> = Reader::from_path_custom_fields(path, options).unwrap();
     let record = reader.records().next().unwrap().unwrap();
 
     let mut buf = Vec::new();

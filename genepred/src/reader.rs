@@ -1,4 +1,5 @@
 use std::any::TypeId;
+use std::borrow::Cow;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
@@ -27,7 +28,7 @@ use zstd::stream::read::Decoder as ZstdDecoder;
 use crate::{
     bed::BedFormat,
     genepred::{ExtraValue, Extras, GenePred},
-    gxf::{self, Gff, Gtf, GxfOptions},
+    gxf::{self, Gff, Gtf, GxfFormat},
 };
 
 /// Result alias for reader operations.
@@ -146,6 +147,172 @@ impl ReaderError {
     }
 }
 
+/// Configuration for reader behaviour across formats.
+///
+/// Child features default to common GTF/GFF annotations; call
+/// `clear_child_features()` to accept all non-parent features.
+#[derive(Clone, Debug)]
+pub struct ReaderOptions<'a> {
+    /// The number of additional fields to expect in each record (BED)
+    additional_fields: usize,
+    /// Overrides the feature used to identify parent and child records (GTF/GFF)
+    parent_feature: Option<Cow<'a, [u8]>>,
+    child_features: Option<Vec<Cow<'a, [u8]>>>,
+    /// Overrides the attribute used to group parent records (GTF/GFF)
+    parent_attribute: Option<Cow<'a, [u8]>>,
+    child_attribute: Option<Cow<'a, [u8]>>,
+}
+
+impl<'a> Default for ReaderOptions<'a> {
+    fn default() -> Self {
+        Self {
+            additional_fields: 0,
+            parent_feature: None,
+            parent_attribute: None,
+            child_attribute: None,
+            child_features: Some(default_child_features()),
+        }
+    }
+}
+
+impl<'a> ReaderOptions<'a> {
+    /// Creates a new options builder with defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the number of additional fields to expect in each record.
+    pub fn additional_fields(mut self, count: usize) -> Self {
+        self.additional_fields = count;
+        self
+    }
+
+    /// Overrides the feature used to identify parent records.
+    pub fn parent_feature<P>(mut self, feature: P) -> Self
+    where
+        P: Into<Cow<'a, [u8]>>,
+    {
+        self.parent_feature = Some(feature.into());
+        self
+    }
+
+    /// Overrides the attribute used to group parent records.
+    pub fn parent_attribute<P>(mut self, attribute: P) -> Self
+    where
+        P: Into<Cow<'a, [u8]>>,
+    {
+        self.parent_attribute = Some(attribute.into());
+        self
+    }
+
+    /// Overrides the attribute used to group child records.
+    pub fn child_attribute<P>(mut self, attribute: P) -> Self
+    where
+        P: Into<Cow<'a, [u8]>>,
+    {
+        self.child_attribute = Some(attribute.into());
+        self
+    }
+
+    /// Limits child records to the provided feature names.
+    pub fn child_feature<F>(mut self, feature: F) -> Self
+    where
+        F: Into<Cow<'a, [u8]>>,
+    {
+        self.child_features = Some(vec![feature.into()]);
+        self
+    }
+
+    /// Limits child records to the provided feature names.
+    pub fn child_features<I, F>(mut self, features: I) -> Self
+    where
+        I: IntoIterator<Item = F>,
+        F: Into<Cow<'a, [u8]>>,
+    {
+        let mut values = Vec::new();
+        for feature in features {
+            values.push(feature.into());
+        }
+        self.child_features = Some(values);
+        self
+    }
+
+    /// Removes any child feature filter, allowing all non-parent features.
+    pub fn clear_child_features(mut self) -> Self {
+        self.child_features = None;
+        self
+    }
+
+    /// Returns the number of additional fields expected in each record.
+    pub(crate) fn additional_fields_count(&self) -> usize {
+        self.additional_fields
+    }
+
+    /// Returns the parent feature name.
+    pub(crate) fn resolved_parent_feature<'b, F: GxfFormat>(&'b self) -> Cow<'b, [u8]> {
+        self.parent_feature
+            .as_ref()
+            .map(|feature| Cow::Borrowed(feature.as_ref()))
+            .unwrap_or_else(|| Cow::Borrowed(F::DEFAULT_PARENT_FEATURE))
+    }
+
+    /// Returns the parent attribute name.
+    pub(crate) fn resolved_parent_attribute<'b, F: GxfFormat>(&'b self) -> Cow<'b, [u8]> {
+        self.parent_attribute
+            .as_ref()
+            .map(|attribute| Cow::Borrowed(attribute.as_ref()))
+            .unwrap_or_else(|| Cow::Borrowed(F::DEFAULT_PARENT_ATTRIBUTE))
+    }
+
+    /// Returns the child attribute name.
+    pub(crate) fn resolved_child_attribute<'b, F: GxfFormat>(&'b self) -> Cow<'b, [u8]> {
+        self.child_attribute
+            .as_ref()
+            .map(|attribute| Cow::Borrowed(attribute.as_ref()))
+            .unwrap_or_else(|| Cow::Borrowed(F::DEFAULT_CHILD_ATTRIBUTE))
+    }
+
+    /// Returns the child feature names.
+    pub(crate) fn child_features_ref(&self) -> Option<&[Cow<'a, [u8]>]> {
+        self.child_features.as_deref()
+    }
+
+    /// Converts the options into owned values.
+    pub(crate) fn into_owned(self) -> ReaderOptions<'static> {
+        ReaderOptions {
+            additional_fields: self.additional_fields,
+            parent_feature: self
+                .parent_feature
+                .map(|feature| Cow::Owned(feature.into_owned())),
+            parent_attribute: self
+                .parent_attribute
+                .map(|attribute| Cow::Owned(attribute.into_owned())),
+            child_attribute: self
+                .child_attribute
+                .map(|attribute| Cow::Owned(attribute.into_owned())),
+            child_features: self.child_features.map(|features| {
+                features
+                    .into_iter()
+                    .map(|feature| Cow::Owned(feature.into_owned()))
+                    .collect()
+            }),
+        }
+    }
+}
+
+/// Returns the default child features.
+fn default_child_features<'a>() -> Vec<Cow<'a, [u8]>> {
+    vec![
+        Cow::Borrowed(b"exon"),
+        Cow::Borrowed(b"cds"),
+        Cow::Borrowed(b"start_codon"),
+        Cow::Borrowed(b"stop_codon"),
+        Cow::Borrowed(b"five_prime_utr"),
+        Cow::Borrowed(b"three_prime_utr"),
+        Cow::Borrowed(b"utr"),
+    ]
+}
+
 /// The mode to use when reading a BED file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReaderMode {
@@ -216,7 +383,7 @@ fn detect_compression_from_extension(path: &Path) -> Compression {
 /// ```
 pub struct ReaderBuilder<R: BedFormat + Into<GenePred>> {
     source: Option<ReaderSource>,
-    additional_fields: usize,
+    options: ReaderOptions<'static>,
     mode: ReaderMode,
     buffer_capacity: usize,
     #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
@@ -228,7 +395,7 @@ impl<R: BedFormat + Into<GenePred>> Default for ReaderBuilder<R> {
     fn default() -> Self {
         Self {
             source: None,
-            additional_fields: 0,
+            options: ReaderOptions::default(),
             mode: ReaderMode::Default,
             buffer_capacity: 64 * 1024,
             #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
@@ -256,7 +423,13 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
 
     /// Sets the number of additional fields to expect in each record.
     pub fn additional_fields(mut self, count: usize) -> Self {
-        self.additional_fields = count;
+        self.options = self.options.additional_fields(count);
+        self
+    }
+
+    /// Replaces the reader options.
+    pub fn options(mut self, options: ReaderOptions<'_>) -> Self {
+        self.options = options.into_owned();
         self
     }
 
@@ -297,12 +470,16 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
                 match self.mode {
                     ReaderMode::Default => {
                         let reader = self.open_path_stream(&path)?;
-                        Reader::from_stream(reader, self.additional_fields, self.buffer_capacity)
+                        Reader::from_stream(
+                            reader,
+                            self.options.additional_fields_count(),
+                            self.buffer_capacity,
+                        )
                     }
                     ReaderMode::Mmap => {
                         #[cfg(feature = "mmap")]
                         {
-                            return self.build_mmap(path, self.additional_fields);
+                            return self.build_mmap(path, self.options.additional_fields_count());
                         }
                         #[cfg(not(feature = "mmap"))]
                         {
@@ -321,9 +498,11 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
                 }
 
                 match self.mode {
-                    ReaderMode::Default => {
-                        Reader::from_stream(reader, self.additional_fields, self.buffer_capacity)
-                    }
+                    ReaderMode::Default => Reader::from_stream(
+                        reader,
+                        self.options.additional_fields_count(),
+                        self.buffer_capacity,
+                    ),
                     ReaderMode::Mmap => Err(ReaderError::Builder(
                         "ERROR: mmap mode requires a filesystem path".into(),
                     )),
@@ -410,13 +589,27 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
         if additional_fields == 0 {
             Reader::from_mmap(path)
         } else {
-            Reader::from_mmap_with_additional_fields(path, additional_fields)
+            let map = unsafe { MmapOptions::new().map(&File::open(&path)?) }
+                .map_err(ReaderError::Mmap)?;
+
+            Ok(Reader {
+                inner: InnerSource::Mmap(MmapInner {
+                    data: map.into(),
+                    cursor: 0,
+                }),
+                buffer: String::with_capacity(1024),
+                additional_fields,
+                line_number: 0,
+                extra_keys: build_extra_keys(R::FIELD_COUNT, additional_fields),
+                preloaded: None,
+                _marker: PhantomData,
+            })
         }
     }
 
     /// Builds a `Reader` for GXF formats (GTF/GFF) from a filesystem path.
     fn build_gxf_from_path(&self, path: PathBuf) -> ReaderResult<Reader<R>> {
-        if self.additional_fields != 0 {
+        if self.options.additional_fields_count() != 0 {
             return Err(ReaderError::Builder(
                 "ERROR: additional fields are not supported for this format".into(),
             ));
@@ -432,17 +625,17 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
             ));
         }
 
-        let options = GxfOptions::new();
+        let options = &self.options;
         if TypeId::of::<R>() == TypeId::of::<Gtf>() {
             return match self.mode {
                 ReaderMode::Default => {
-                    let records = gxf::read_gxf_file::<Gtf, _>(&path, &options)?;
+                    let records = gxf::read_gxf_file::<Gtf, _>(&path, options)?;
                     Reader::from_preloaded_records(records)
                 }
                 ReaderMode::Mmap => {
                     #[cfg(feature = "mmap")]
                     {
-                        let records = gxf::read_gxf_mmap::<Gtf, _>(&path, &options)?;
+                        let records = gxf::read_gxf_mmap::<Gtf, _>(&path, options)?;
                         Reader::from_preloaded_records(records)
                     }
                     #[cfg(not(feature = "mmap"))]
@@ -458,13 +651,13 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
         if TypeId::of::<R>() == TypeId::of::<Gff>() {
             return match self.mode {
                 ReaderMode::Default => {
-                    let records = gxf::read_gxf_file::<Gff, _>(&path, &options)?;
+                    let records = gxf::read_gxf_file::<Gff, _>(&path, options)?;
                     Reader::from_preloaded_records(records)
                 }
                 ReaderMode::Mmap => {
                     #[cfg(feature = "mmap")]
                     {
-                        let records = gxf::read_gxf_mmap::<Gff, _>(&path, &options)?;
+                        let records = gxf::read_gxf_mmap::<Gff, _>(&path, options)?;
                         Reader::from_preloaded_records(records)
                     }
                     #[cfg(not(feature = "mmap"))]
@@ -585,16 +778,16 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
         Self::builder().from_path(path).build()
     }
 
-    /// Creates a new `Reader` from a path with a specified number of
-    /// additional fields.
+    /// Creates a new `Reader` from a path with custom reader options.
     ///
     /// # Example
     ///
     /// ```rust,no_run,ignore
-    /// use genepred::{Reader, Bed3};
+    /// use genepred::{Reader, Bed3, ReaderOptions};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::<Bed3>::from_path_with_additional_fields("tests/data/simple.bed", 1)?;
+    ///     let options = ReaderOptions::new().additional_fields(1);
+    ///     let reader = Reader::<Bed3>::from_path_custom_fields("tests/data/simple.bed", options)?;
     ///
     ///     for record in reader.records() {
     ///         // ...
@@ -603,14 +796,11 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     ///     Ok(())
     /// }
     /// ```
-    pub fn from_path_with_additional_fields<P: AsRef<Path>>(
+    pub fn from_path_custom_fields<P: AsRef<Path>>(
         path: P,
-        additional_fields: usize,
+        options: ReaderOptions<'_>,
     ) -> ReaderResult<Self> {
-        Self::builder()
-            .from_path(path)
-            .additional_fields(additional_fields)
-            .build()
+        Self::builder().from_path(path).options(options).build()
     }
 
     /// Creates a new `Reader` from a reader.
@@ -746,10 +936,12 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
         let path = path.as_ref();
 
         if TypeId::of::<R>() == TypeId::of::<Gtf>() {
-            let records = gxf::read_gxf_mmap::<Gtf, _>(path, &GxfOptions::new())?;
+            let options = ReaderOptions::default();
+            let records = gxf::read_gxf_mmap::<Gtf, _>(path, &options)?;
             return Reader::from_preloaded_records(records);
         } else if TypeId::of::<R>() == TypeId::of::<Gff>() {
-            let records = gxf::read_gxf_mmap::<Gff, _>(path, &GxfOptions::new())?;
+            let options = ReaderOptions::default();
+            let records = gxf::read_gxf_mmap::<Gff, _>(path, &options)?;
             return Reader::from_preloaded_records(records);
         }
 
@@ -770,15 +962,16 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
         })
     }
 
-    /// Creates a new `Reader` with additional fields from a memory-mapped file.
+    /// Creates a new `Reader` with custom reader options from a memory-mapped file.
     ///
     /// # Example
     ///
     /// ```rust,no_run,ignore
-    /// use genepred::{Reader, Bed3};
+    /// use genepred::{Reader, Bed3, ReaderOptions};
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::<Bed3>::from_mmap_with_additional_fields("tests/data/simple.bed", 1)?;
+    ///     let options = ReaderOptions::new().additional_fields(1);
+    ///     let reader = Reader::<Bed3>::from_mmap_custom_fields("tests/data/simple.bed", options)?;
     ///
     ///     for record in reader.records() {
     ///         // ...
@@ -792,7 +985,8 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// use rayon::prelude::*;
     ///
     /// fn main() -> Result<(), Box<dyn std::error::Error>> {
-    ///     let reader = Reader::<Bed3>::from_mmap_with_additional_fields("tests/data/simple.bed", 1)?;
+    ///     let options = ReaderOptions::new().additional_fields(1);
+    ///     let reader = Reader::<Bed3>::from_mmap_custom_fields("tests/data/simple.bed", options)?;
     ///     if let Ok(records) = reader.par_records() {
     ///         records.for_each(|record| {
     ///             let record = record;
@@ -803,31 +997,15 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// }
     /// ```
     #[cfg(feature = "mmap")]
-    pub fn from_mmap_with_additional_fields<P: AsRef<Path>>(
+    pub fn from_mmap_custom_fields<P: AsRef<Path>>(
         path: P,
-        additional_fields: usize,
+        options: ReaderOptions<'_>,
     ) -> ReaderResult<Self> {
-        if !R::SUPPORTS_STANDARD_READER {
-            return Err(ReaderError::Builder(
-                "ERROR: additional fields are not supported for this format".into(),
-            ));
-        }
-
-        let map =
-            unsafe { MmapOptions::new().map(&File::open(&path)?) }.map_err(ReaderError::Mmap)?;
-
-        Ok(Self {
-            inner: InnerSource::Mmap(MmapInner {
-                data: map.into(),
-                cursor: 0,
-            }),
-            buffer: String::with_capacity(1024),
-            additional_fields,
-            line_number: 0,
-            extra_keys: build_extra_keys(R::FIELD_COUNT, additional_fields),
-            preloaded: None,
-            _marker: PhantomData,
-        })
+        Self::builder()
+            .from_path(path)
+            .mode(ReaderMode::Mmap)
+            .options(options)
+            .build()
     }
 
     /// Returns the number of additional fields expected in each record.
@@ -1190,13 +1368,13 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
 impl Reader<Gtf> {
     /// Creates a `GTF` reader that aggregates records into `GenePred`s.
     pub fn from_gxf<P: AsRef<Path>>(path: P) -> ReaderResult<Self> {
-        Self::from_gxf_with_options(path, GxfOptions::new())
+        Self::from_gxf_with_options(path, ReaderOptions::default())
     }
 
     /// Creates a `GTF` reader with custom aggregation options.
     pub fn from_gxf_with_options<'a, P: AsRef<Path>>(
         path: P,
-        options: GxfOptions<'a>,
+        options: ReaderOptions<'a>,
     ) -> ReaderResult<Self> {
         let records = gxf::read_gxf_file::<Gtf, _>(path, &options)?;
         Reader::from_preloaded_records(records)
@@ -1206,7 +1384,7 @@ impl Reader<Gtf> {
     /// Creates a `GTF` reader backed by a memory-mapped file.
     pub fn from_mmap_with_options<'a, P: AsRef<Path>>(
         path: P,
-        options: GxfOptions<'a>,
+        options: ReaderOptions<'a>,
     ) -> ReaderResult<Self> {
         let records = gxf::read_gxf_mmap::<Gtf, _>(path, &options)?;
         Reader::from_preloaded_records(records)
@@ -1216,13 +1394,13 @@ impl Reader<Gtf> {
 impl Reader<Gff> {
     /// Creates a `GFF/GFF3` reader that aggregates records into `GenePred`s.
     pub fn from_gxf<P: AsRef<Path>>(path: P) -> ReaderResult<Self> {
-        Self::from_gxf_with_options(path, GxfOptions::new())
+        Self::from_gxf_with_options(path, ReaderOptions::default())
     }
 
     /// Creates a `GFF/GFF3` reader with custom aggregation options.
     pub fn from_gxf_with_options<'a, P: AsRef<Path>>(
         path: P,
-        options: GxfOptions<'a>,
+        options: ReaderOptions<'a>,
     ) -> ReaderResult<Self> {
         let records = gxf::read_gxf_file::<Gff, _>(path, &options)?;
         Reader::from_preloaded_records(records)
@@ -1232,7 +1410,7 @@ impl Reader<Gff> {
     /// Creates a `GFF` reader backed by a memory-mapped file.
     pub fn from_mmap_with_options<'a, P: AsRef<Path>>(
         path: P,
-        options: GxfOptions<'a>,
+        options: ReaderOptions<'a>,
     ) -> ReaderResult<Self> {
         let records = gxf::read_gxf_mmap::<Gff, _>(path, &options)?;
         Reader::from_preloaded_records(records)

@@ -10,8 +10,8 @@
   </span>
 
   <p align="center">
-    <a href="https://img.shields.io/badge/version-0.0.2-green" target="_blank">
-      <img alt="Version Badge" src="https://img.shields.io/badge/version-0.0.2-green">
+    <a href="https://img.shields.io/badge/version-0.0.5-green" target="_blank">
+      <img alt="Version Badge" src="https://img.shields.io/badge/version-0.0.5-green">
     </a>
     <a href="https://crates.io/crates/genepred" target="_blank">
       <img alt="Crates.io Version" src="https://img.shields.io/crates/v/genepred">
@@ -29,7 +29,7 @@
         <span> a port for the GenePred format in Rust</span>
         <br>
         <br>
-        <a href="https://docs.rs/genepred/0.0.2/genepred/">docs</a> .
+        <a href="https://docs.rs/genepred/0.0.5/genepred/">docs</a> .
         <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#Usage">usage</a> .
         <a href="https://github.com/alejandrogzi/genepred?tab=readme-ov-file#Features">features</a> .
         <a href="https://github.com/alejandrogzi/genepred/blob/master/assets/EXAMPLES.md">examples</a>
@@ -48,10 +48,10 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-genepred = "0.0.4"
+genepred = "0.0.5"
 
 # Optional features
-genepred = { version = "0.0.4", features = ["gzip", "zstd", "bz2", "mmap", "rayon"] }
+genepred = { version = "0.0.5", features = ["gzip", "zstd", "bz2", "mmap", "rayon"] }
 ```
 
 ## Usage
