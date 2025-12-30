@@ -231,7 +231,7 @@ fn test_reader_bed12_from_path() {
 fn test_reader_bed12_with_additional_fields() {
     let path = "tests/data/bed12_extra.bed";
     let options = ReaderOptions::new().additional_fields(2);
-    let mut reader: Reader<Bed12> = Reader::from_path_custom_fields(path, options).unwrap();
+    let mut reader: Reader<Bed12> = Reader::from_path_with_custom_fields(path, options).unwrap();
     let records: Vec<_> = reader.records().map(|r| r.unwrap()).collect();
 
     assert_eq!(records.len(), 1);
