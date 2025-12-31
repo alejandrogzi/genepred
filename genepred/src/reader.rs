@@ -796,7 +796,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     ///     Ok(())
     /// }
     /// ```
-    pub fn from_path_custom_fields<P: AsRef<Path>>(
+    pub fn from_path_with_custom_fields<P: AsRef<Path>>(
         path: P,
         options: ReaderOptions<'_>,
     ) -> ReaderResult<Self> {
@@ -997,7 +997,7 @@ impl<R: BedFormat + Into<GenePred>> Reader<R> {
     /// }
     /// ```
     #[cfg(feature = "mmap")]
-    pub fn from_mmap_custom_fields<P: AsRef<Path>>(
+    pub fn from_mmap_with_custom_fields<P: AsRef<Path>>(
         path: P,
         options: ReaderOptions<'_>,
     ) -> ReaderResult<Self> {

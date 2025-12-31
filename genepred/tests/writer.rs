@@ -188,7 +188,7 @@ fn write_gtf_allowlist_filters_attributes() {
 fn write_gtf_gene_transcript_first() {
     let path = "tests/data/bed12_extra.bed";
     let options = ReaderOptions::new().additional_fields(2);
-    let mut reader: Reader<Bed12> = Reader::from_path_custom_fields(path, options).unwrap();
+    let mut reader: Reader<Bed12> = Reader::from_path_with_custom_fields(path, options).unwrap();
     let record = reader.records().next().unwrap().unwrap();
 
     let mut buf = Vec::new();
