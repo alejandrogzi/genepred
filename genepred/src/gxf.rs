@@ -548,7 +548,7 @@ impl TranscriptBuilder {
             b"transcript_name".as_ref(),
             b"Name".as_ref(),
             b"gene_name".as_ref(),
-            b"gene_id".as_ref(),
+            b"transcript_id".as_ref(),
         ] {
             if let Some(value) = attributes.get(candidate).and_then(ExtraValue::first) {
                 self.name = Some(value.to_vec());
