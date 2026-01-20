@@ -1922,7 +1922,7 @@ fn should_skip(line: &str) -> bool {
 /// Returns `true` if the line should be skipped.
 ///
 /// This function is used by [`Reader::parse_line`] and [`Reader::parse_lines`].
-#[cfg(feature = "rayon")]
+#[cfg(any(feature = "rayon", feature = "mmap"))]
 fn should_skip_bytes(line: &[u8]) -> bool {
     let mut start = 0usize;
     let mut end = line.len();
