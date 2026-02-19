@@ -261,7 +261,10 @@ fn test_genepred_get_extra() {
     assert_eq!(gene.get_extra(b"missing"), None);
     assert_eq!(
         gene.get_extra(b"gene_id"),
-        Some(&ExtraValue::Array(vec![b"gene1".to_vec(), b"gene2".to_vec()]))
+        Some(&ExtraValue::Array(vec![
+            b"gene1".to_vec(),
+            b"gene2".to_vec()
+        ]))
     );
 }
 
