@@ -129,6 +129,80 @@ impl ExtraValue {
             ExtraValue::Array(values) => ExtraValueIter::Array(values.iter()),
         }
     }
+
+    /// Consumes the `ExtraValue` and returns the underlying value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let scalar = ExtraValue::Scalar(b"value1".to_vec());
+    /// let value = scalar.into_inner();
+    /// assert_eq!(value, vec![b"value1"]);
+    ///
+    /// let array = ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]);
+    /// let value = array.into_inner();
+    /// assert_eq!(value, vec![b"value1".to_vec(), b"value2".to_vec()]);
+    /// ```
+    pub fn into_inner(self) -> Vec<Vec<u8>> {
+        match self {
+            ExtraValue::Scalar(value) => vec![value],
+            ExtraValue::Array(values) => values,
+        }
+    }
+
+    /// Attempts to convert the `ExtraValue` into a scalar value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let scalar = ExtraValue::Scalar(b"value1".to_vec());
+    /// let value = scalar.into_scalar();
+    /// assert_eq!(value, Some(b"value1".to_vec()));
+    ///
+    /// let array = ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]);
+    /// let value = array.into_scalar();
+    /// assert_eq!(value, None);
+    /// ```
+    pub fn into_scalar(self) -> Option<Vec<u8>> {
+        match self {
+            ExtraValue::Scalar(value) => Some(value),
+            ExtraValue::Array(_) => None,
+        }
+    }
+
+    /// Attempts to convert the `ExtraValue` into an array of values.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let scalar = ExtraValue::Scalar(b"value1".to_vec());
+    /// let value = scalar.into_array();
+    /// assert_eq!(value, None);
+    ///
+    /// let array = ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]);
+    /// let value = array.into_array();
+    /// assert_eq!(value, Some(vec![b"value1".to_vec(), b"value2".to_vec()]));
+    /// ```
+    pub fn into_array(self) -> Option<Vec<Vec<u8>>> {
+        match self {
+            ExtraValue::Scalar(_) => None,
+            ExtraValue::Array(values) => Some(values),
+        }
+    }
+
+    /// Returns true if the `ExtraValue` is empty.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            ExtraValue::Scalar(value) => value.is_empty(),
+            ExtraValue::Array(values) => values.is_empty(),
+        }
+    }
 }
 
 /// Convert a byte buffer into an [`ExtraValue`].
@@ -365,6 +439,11 @@ impl GenePred {
         }
     }
 
+    /// Returns the value associated with a key, if present.
+    pub fn get_extra(&self, key: &[u8]) -> Option<&ExtraValue> {
+        self.extras.get(key)
+    }
+
     /// Clears all extra fields.
     pub fn clear_extras(&mut self) {
         self.extras.clear();
@@ -507,6 +586,126 @@ impl GenePred {
                 })
                 .collect(),
             _ => Vec::new(),
+        }
+    }
+
+    /// Returns all UTR (untranslated) exons.
+    pub fn utr_exons(&self) -> Vec<(u64, u64)> {
+        match (self.thick_start, self.thick_end) {
+            (Some(thick_start), Some(thick_end)) if thick_start < thick_end => {
+                let mut utrs = Vec::new();
+
+                for (start, end) in self.exons() {
+                    // Exon is fully outside coding sequence.
+                    if end <= thick_start || start >= thick_end {
+                        utrs.push((start, end));
+                        continue;
+                    }
+
+                    // Left non-coding portion.
+                    if start < thick_start {
+                        utrs.push((start, thick_start.min(end)));
+                    }
+
+                    // Right non-coding portion.
+                    if end > thick_end {
+                        utrs.push((thick_end.max(start), end));
+                    }
+                }
+
+                utrs
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// Returns the total UTR length (sum of all UTR exons).
+    pub fn utr_length(&self) -> u64 {
+        self.utr_exons()
+            .iter()
+            .map(|(start, end)| end.saturating_sub(*start))
+            .sum()
+    }
+
+    /// Returns all 5' UTR (untranslated) exons (strand-aware)
+    pub fn five_prime_utr(&self) -> Vec<(u64, u64)> {
+        match self.strand {
+            Some(Strand::Forward) => match (self.thick_start, self.thick_end) {
+                (Some(thick_start), Some(thick_end)) if thick_start < thick_end => self
+                    .exons()
+                    .into_iter()
+                    .filter_map(|(start, end)| {
+                        let utr_start = start;
+                        let utr_end = end.min(thick_start);
+
+                        if utr_start < utr_end {
+                            Some((utr_start, utr_end))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            Some(Strand::Reverse) => match (self.thick_start, self.thick_end) {
+                (Some(thick_start), Some(thick_end)) if thick_start < thick_end => self
+                    .exons()
+                    .into_iter()
+                    .filter_map(|(start, end)| {
+                        let utr_start = start.max(thick_end);
+                        let utr_end = end;
+
+                        if utr_start < utr_end {
+                            Some((utr_start, utr_end))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            Some(Strand::Unknown) | None => Vec::new(),
+        }
+    }
+
+    /// Returns all 3' UTR (untranslated) exons (strand-aware)
+    pub fn three_prime_utr(&self) -> Vec<(u64, u64)> {
+        match self.strand {
+            Some(Strand::Reverse) => match (self.thick_start, self.thick_end) {
+                (Some(thick_start), Some(thick_end)) if thick_start < thick_end => self
+                    .exons()
+                    .into_iter()
+                    .filter_map(|(start, end)| {
+                        let utr_start = start;
+                        let utr_end = end.min(thick_start);
+
+                        if utr_start < utr_end {
+                            Some((utr_start, utr_end))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            Some(Strand::Forward) => match (self.thick_start, self.thick_end) {
+                (Some(thick_start), Some(thick_end)) if thick_start < thick_end => self
+                    .exons()
+                    .into_iter()
+                    .filter_map(|(start, end)| {
+                        let utr_start = start.max(thick_end);
+                        let utr_end = end;
+
+                        if utr_start < utr_end {
+                            Some((utr_start, utr_end))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            },
+            Some(Strand::Unknown) | None => Vec::new(),
         }
     }
 
