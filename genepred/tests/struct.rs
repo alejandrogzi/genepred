@@ -229,6 +229,93 @@ fn test_genepred_coding_exons_cds_length() {
 }
 
 #[test]
+fn test_extra_value_conversion_and_empty_helpers() {
+    let scalar = ExtraValue::Scalar(b"value1".to_vec());
+    assert_eq!(scalar.clone().into_inner(), vec![b"value1".to_vec()]);
+    assert_eq!(scalar.clone().into_scalar(), Some(b"value1".to_vec()));
+    assert_eq!(scalar.into_array(), None);
+
+    let array = ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]);
+    assert_eq!(
+        array.clone().into_inner(),
+        vec![b"value1".to_vec(), b"value2".to_vec()]
+    );
+    assert_eq!(array.clone().into_scalar(), None);
+    assert_eq!(
+        array.into_array(),
+        Some(vec![b"value1".to_vec(), b"value2".to_vec()])
+    );
+
+    assert!(ExtraValue::Scalar(Vec::new()).is_empty());
+    assert!(ExtraValue::Array(Vec::new()).is_empty());
+    assert!(!ExtraValue::Scalar(b"v".to_vec()).is_empty());
+    assert!(!ExtraValue::Array(vec![Vec::new()]).is_empty());
+}
+
+#[test]
+fn test_genepred_get_extra() {
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, Extras::new());
+    gene.add_extra("gene_id", "gene1");
+    gene.add_extra("gene_id", "gene2");
+
+    assert_eq!(gene.get_extra(b"missing"), None);
+    assert_eq!(
+        gene.get_extra(b"gene_id"),
+        Some(&ExtraValue::Array(vec![b"gene1".to_vec(), b"gene2".to_vec()]))
+    );
+}
+
+#[test]
+fn test_genepred_utr_exons_and_utr_length() {
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 120, Extras::new());
+    gene.set_block_count(Some(3));
+    gene.set_block_starts(Some(vec![10, 40, 100]));
+    gene.set_block_ends(Some(vec![30, 90, 120]));
+    gene.set_thick_start(Some(50));
+    gene.set_thick_end(Some(80));
+
+    assert_eq!(
+        gene.utr_exons(),
+        vec![(10, 30), (40, 50), (80, 90), (100, 120)]
+    );
+    assert_eq!(gene.utr_length(), 60);
+}
+
+#[test]
+fn test_genepred_utr_exons_include_boundary_touching_exons() {
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 40, Extras::new());
+    gene.set_block_count(Some(3));
+    gene.set_block_starts(Some(vec![10, 20, 30]));
+    gene.set_block_ends(Some(vec![20, 30, 40]));
+    gene.set_thick_start(Some(20));
+    gene.set_thick_end(Some(30));
+
+    assert_eq!(gene.utr_exons(), vec![(10, 20), (30, 40)]);
+}
+
+#[test]
+fn test_genepred_strand_aware_utrs() {
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 120, Extras::new());
+    gene.set_block_count(Some(3));
+    gene.set_block_starts(Some(vec![10, 40, 100]));
+    gene.set_block_ends(Some(vec![30, 90, 120]));
+    gene.set_thick_start(Some(50));
+    gene.set_thick_end(Some(80));
+
+    gene.set_strand(Some(Strand::Forward));
+    assert_eq!(gene.five_prime_utr(), vec![(10, 30), (40, 50)]);
+    assert_eq!(gene.three_prime_utr(), vec![(80, 90), (100, 120)]);
+
+    gene.set_strand(Some(Strand::Reverse));
+    assert_eq!(gene.five_prime_utr(), vec![(80, 90), (100, 120)]);
+    assert_eq!(gene.three_prime_utr(), vec![(10, 30), (40, 50)]);
+
+    gene.set_strand(Some(Strand::Unknown));
+    assert!(gene.five_prime_utr().is_empty());
+    assert!(gene.three_prime_utr().is_empty());
+}
+
+#[test]
 fn test_genepred_unnest_extras() {
     let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, Extras::new());
     gene.add_extra(b"attrs".to_vec(), b"tag1=value1;tag2=value2".to_vec());
