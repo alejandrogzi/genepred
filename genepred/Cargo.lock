@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "genepred"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "bzip2",
  "flate2",

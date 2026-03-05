@@ -2,7 +2,7 @@ use std::collections::{hash_map::Entry, HashMap};
 use std::fmt;
 
 use crate::{
-    bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9},
+    bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, BedFormat},
     strand::Strand,
 };
 
@@ -814,6 +814,169 @@ impl GenePred {
     pub fn intron_count(&self) -> usize {
         self.exon_count().saturating_sub(1)
     }
+
+    /// Builds a BED line matching the provided BED type layout.
+    ///
+    /// This method emits only the core BED fields defined by `K`
+    /// (`Bed3`, `Bed4`, `Bed5`, `Bed6`, `Bed8`, `Bed9`, or `Bed12`).
+    /// Additional fields in `extras` are not included.
+    pub fn to_bed<K>(&self) -> Vec<u8>
+    where
+        K: BedFormat,
+    {
+        self.to_bed_with_additional_fields::<K>(0)
+    }
+
+    /// Builds a BED line matching the provided BED type layout with `N`
+    /// additional trailing fields.
+    ///
+    /// Additional fields are read from numeric `extras` keys corresponding to
+    /// contiguous BED column positions:
+    /// `K::FIELD_COUNT + 1` up to `K::FIELD_COUNT + N`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `K` is not one of the supported BED layouts
+    /// (`Bed3`, `Bed4`, `Bed5`, `Bed6`, `Bed8`, `Bed9`, `Bed12`) or when one
+    /// or more required additional field keys are missing.
+    pub fn to_bed_with_additional_fields<K>(&self, additional_fields: usize) -> Vec<u8>
+    where
+        K: BedFormat,
+    {
+        let field_count = K::FIELD_COUNT;
+        assert!(
+            matches!(field_count, 3 | 4 | 5 | 6 | 8 | 9 | 12),
+            "unsupported BED layout: expected one of 3,4,5,6,8,9,12 fields, got {field_count}"
+        );
+
+        let mut fields: Vec<Vec<u8>> = Vec::with_capacity(field_count + additional_fields);
+        fields.push(self.chrom.clone());
+        fields.push(self.start.to_string().into_bytes());
+        fields.push(self.end.to_string().into_bytes());
+
+        if field_count >= 4 {
+            fields.push(self.name.clone().unwrap_or_else(|| b".".to_vec()));
+        }
+
+        if field_count >= 5 {
+            // BED score is currently not represented by GenePred; emit spec-safe default.
+            fields.push(b"0".to_vec());
+        }
+
+        if field_count >= 6 {
+            fields.push(vec![bed_strand_byte(self.strand)]);
+        }
+
+        if field_count >= 8 {
+            fields.push(
+                self.thick_start
+                    .unwrap_or(self.start)
+                    .to_string()
+                    .into_bytes(),
+            );
+            fields.push(self.thick_end.unwrap_or(self.end).to_string().into_bytes());
+        }
+
+        if field_count >= 9 {
+            fields.push(b"0,0,0".to_vec());
+        }
+
+        if field_count == 12 {
+            let exons = derive_bed_exons(self);
+            fields.push(exons.len().to_string().into_bytes());
+            fields.push(render_block_sizes(&exons));
+            fields.push(render_block_starts(&exons, self.start));
+        }
+
+        for idx in 0..additional_fields {
+            let key = (field_count + idx + 1).to_string();
+            let Some(value) = self.extras.get(key.as_bytes()) else {
+                panic!(
+                    "missing additional BED field key '{key}': requested {additional_fields} additional field(s) for BED{field_count}"
+                );
+            };
+            fields.push(render_extra_value(value));
+        }
+
+        join_bed_fields(fields)
+    }
+}
+
+/// Convert a `Strand` to a BED strand byte.
+fn bed_strand_byte(strand: Option<Strand>) -> u8 {
+    match strand {
+        Some(Strand::Forward) => b'+',
+        Some(Strand::Reverse) => b'-',
+        _ => b'.',
+    }
+}
+
+/// Derive BED exons from a `GenePred` record.
+fn derive_bed_exons(record: &GenePred) -> Vec<(u64, u64)> {
+    let mut exons = record.exons();
+    if exons.is_empty() {
+        exons.push((record.start, record.end));
+    }
+    exons.sort_by_key(|(start, _)| *start);
+    exons
+}
+
+/// Render a BED block sizes field.
+fn render_block_sizes(exons: &[(u64, u64)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (start, end) in exons {
+        out.extend_from_slice(end.saturating_sub(*start).to_string().as_bytes());
+        out.push(b',');
+    }
+    out
+}
+
+/// Render a BED block starts field.
+fn render_block_starts(exons: &[(u64, u64)], transcript_start: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (start, _) in exons {
+        out.extend_from_slice(
+            start
+                .saturating_sub(transcript_start)
+                .to_string()
+                .as_bytes(),
+        );
+        out.push(b',');
+    }
+    out
+}
+
+/// Render a BED extra field.
+fn render_extra_value(value: &ExtraValue) -> Vec<u8> {
+    match value {
+        ExtraValue::Scalar(v) => v.clone(),
+        ExtraValue::Array(values) => {
+            let mut out = Vec::new();
+            let mut first = true;
+            for value in values {
+                if !first {
+                    out.push(b',');
+                }
+                out.extend_from_slice(value);
+                first = false;
+            }
+            out
+        }
+    }
+}
+
+/// Join BED fields into a single line.
+fn join_bed_fields(fields: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut line = Vec::new();
+    let mut first = true;
+    for field in fields {
+        if !first {
+            line.push(b'\t');
+        }
+        line.extend_from_slice(&field);
+        first = false;
+    }
+    line
 }
 
 impl fmt::Display for GenePred {

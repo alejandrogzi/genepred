@@ -1,4 +1,4 @@
-use genepred::bed::{Bed12, Bed3, Bed4, Bed6};
+use genepred::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9};
 use genepred::{ExtraValue, Extras, GenePred, Strand};
 
 #[test]
@@ -436,4 +436,91 @@ fn test_genepred_display() {
         format!("{}", gene3),
         "geneB\tchr1\t-\t10\t100\t10\t100\t2\t10,40\t20,60\tfirst=extra1\tsecond=extra2"
     );
+}
+
+#[test]
+fn test_genepred_to_bed_layouts() {
+    let mut extras = Extras::new();
+    extras.insert(b"4".to_vec(), ExtraValue::Scalar(b"ignored".to_vec()));
+    extras.insert(b"13".to_vec(), ExtraValue::Scalar(b"ignored_too".to_vec()));
+
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 100, extras);
+    gene.set_name(Some(b"geneA".to_vec()));
+    gene.set_strand(Some(Strand::Forward));
+    gene.set_thick_start(Some(20));
+    gene.set_thick_end(Some(90));
+    gene.set_block_count(Some(2));
+    gene.set_block_starts(Some(vec![10, 40]));
+    gene.set_block_ends(Some(vec![20, 60]));
+
+    assert_eq!(
+        String::from_utf8(gene.to_bed::<Bed3>()).unwrap(),
+        "chr1\t10\t100"
+    );
+    assert_eq!(
+        String::from_utf8(gene.to_bed::<Bed4>()).unwrap(),
+        "chr1\t10\t100\tgeneA"
+    );
+    assert_eq!(
+        String::from_utf8(gene.to_bed::<Bed5>()).unwrap(),
+        "chr1\t10\t100\tgeneA\t0"
+    );
+    assert_eq!(
+        String::from_utf8(gene.to_bed::<Bed6>()).unwrap(),
+        "chr1\t10\t100\tgeneA\t0\t+"
+    );
+    assert_eq!(
+        String::from_utf8(gene.to_bed::<Bed8>()).unwrap(),
+        "chr1\t10\t100\tgeneA\t0\t+\t20\t90"
+    );
+    assert_eq!(
+        String::from_utf8(gene.to_bed::<Bed9>()).unwrap(),
+        "chr1\t10\t100\tgeneA\t0\t+\t20\t90\t0,0,0"
+    );
+    assert_eq!(
+        String::from_utf8(gene.to_bed::<Bed12>()).unwrap(),
+        "chr1\t10\t100\tgeneA\t0\t+\t20\t90\t0,0,0\t2\t10,20,\t0,30,"
+    );
+}
+
+#[test]
+fn test_genepred_to_bed_with_additional_fields() {
+    let mut extras = Extras::new();
+    extras.insert(b"13".to_vec(), ExtraValue::Scalar(b"foo".to_vec()));
+    extras.insert(
+        b"14".to_vec(),
+        ExtraValue::Array(vec![b"bar".to_vec(), b"baz".to_vec()]),
+    );
+
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 100, extras);
+    gene.set_name(Some(b"geneA".to_vec()));
+    gene.set_strand(Some(Strand::Forward));
+    gene.set_thick_start(Some(20));
+    gene.set_thick_end(Some(90));
+    gene.set_block_count(Some(2));
+    gene.set_block_starts(Some(vec![10, 40]));
+    gene.set_block_ends(Some(vec![20, 60]));
+
+    assert_eq!(
+        String::from_utf8(gene.to_bed_with_additional_fields::<Bed12>(2)).unwrap(),
+        "chr1\t10\t100\tgeneA\t0\t+\t20\t90\t0,0,0\t2\t10,20,\t0,30,\tfoo\tbar,baz"
+    );
+}
+
+#[test]
+#[should_panic(expected = "missing additional BED field key '14'")]
+fn test_genepred_to_bed_with_additional_fields_panics_when_missing() {
+    let mut extras = Extras::new();
+    extras.insert(b"13".to_vec(), ExtraValue::Scalar(b"foo".to_vec()));
+
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 100, extras);
+    gene.set_name(Some(b"geneA".to_vec()));
+    gene.set_strand(Some(Strand::Forward));
+    gene.set_thick_start(Some(20));
+    gene.set_thick_end(Some(90));
+    gene.set_block_count(Some(2));
+    gene.set_block_starts(Some(vec![10, 40]));
+    gene.set_block_ends(Some(vec![20, 60]));
+
+    let _ = gene.to_bed_with_additional_fields::<Bed12>(2);
 }
