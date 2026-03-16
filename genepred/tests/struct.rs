@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use genepred::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9};
-use genepred::{ExtraValue, Extras, GenePred, Strand};
+use genepred::{ExtraValue, Extras, GenePred, Gff, Gtf, Strand};
 
 #[test]
 fn test_genepred_from_coords() {
@@ -523,4 +525,185 @@ fn test_genepred_to_bed_with_additional_fields_panics_when_missing() {
     gene.set_block_ends(Some(vec![20, 60]));
 
     let _ = gene.to_bed_with_additional_fields::<Bed12>(2);
+}
+
+#[test]
+fn test_genepred_to_gtf_with_mapping_and_additional_fields() {
+    let mut extras = Extras::new();
+    extras.insert(b"13".to_vec(), ExtraValue::Scalar(b"foo".to_vec()));
+    extras.insert(
+        b"14".to_vec(),
+        ExtraValue::Array(vec![b"bar".to_vec(), b"baz".to_vec()]),
+    );
+
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 99, 200, extras);
+    gene.set_name(Some(b"tx1".to_vec()));
+    gene.set_strand(Some(Strand::Forward));
+    gene.set_block_count(Some(2));
+    gene.set_block_starts(Some(vec![99, 169]));
+    gene.set_block_ends(Some(vec![150, 200]));
+    gene.set_thick_start(Some(119));
+    gene.set_thick_end(Some(180));
+
+    let mut mapping = HashMap::new();
+    mapping.insert("tx1".to_string(), "gene1".to_string());
+
+    let lines = gene.to_gxf_with_additional_fields::<Gtf>(2, Some(&mapping));
+    let text: Vec<String> = lines
+        .into_iter()
+        .map(|line| String::from_utf8(line).unwrap())
+        .collect();
+
+    assert_eq!(text.len(), 8);
+    assert_eq!(
+        text[0],
+        "chr1\tgenepred\tgene\t100\t200\t.\t+\t.\tgene_id \"gene1\"; 13 \"foo\"; 14 \"bar,baz\";"
+    );
+    assert_eq!(
+        text[1],
+        "chr1\tgenepred\ttranscript\t100\t200\t.\t+\t.\tgene_id \"gene1\"; transcript_id \"tx1\"; 13 \"foo\"; 14 \"bar,baz\";"
+    );
+    assert_eq!(
+        text[2],
+        "chr1\tgenepred\texon\t100\t150\t.\t+\t.\tgene_id \"gene1\"; transcript_id \"tx1\"; exon_number \"1\"; 13 \"foo\"; 14 \"bar,baz\";"
+    );
+    assert_eq!(
+        text[3],
+        "chr1\tgenepred\texon\t170\t200\t.\t+\t.\tgene_id \"gene1\"; transcript_id \"tx1\"; exon_number \"2\"; 13 \"foo\"; 14 \"bar,baz\";"
+    );
+    assert!(text.contains(
+        &"chr1\tgenepred\tCDS\t120\t150\t.\t+\t0\tgene_id \"gene1\"; transcript_id \"tx1\"; exon_number \"1\"; 13 \"foo\"; 14 \"bar,baz\";".to_string()
+    ));
+    assert!(text.contains(
+        &"chr1\tgenepred\tCDS\t170\t180\t.\t+\t2\tgene_id \"gene1\"; transcript_id \"tx1\"; exon_number \"2\"; 13 \"foo\"; 14 \"bar,baz\";".to_string()
+    ));
+    assert!(text.contains(
+        &"chr1\tgenepred\tstart_codon\t120\t122\t.\t+\t.\tgene_id \"gene1\"; transcript_id \"tx1\"; exon_number \"1\"; 13 \"foo\"; 14 \"bar,baz\";".to_string()
+    ));
+    assert!(text.contains(
+        &"chr1\tgenepred\tstop_codon\t178\t180\t.\t+\t.\tgene_id \"gene1\"; transcript_id \"tx1\"; exon_number \"2\"; 13 \"foo\"; 14 \"bar,baz\";".to_string()
+    ));
+}
+
+#[test]
+fn test_genepred_to_gff_standard_hierarchy() {
+    let mut extras = Extras::new();
+    extras.insert(b"13".to_vec(), ExtraValue::Scalar(b"foo".to_vec()));
+
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 99, 200, extras);
+    gene.set_name(Some(b"tx1".to_vec()));
+    gene.set_strand(Some(Strand::Forward));
+    gene.set_block_count(Some(2));
+    gene.set_block_starts(Some(vec![99, 169]));
+    gene.set_block_ends(Some(vec![150, 200]));
+    gene.set_thick_start(Some(119));
+    gene.set_thick_end(Some(180));
+
+    let mut mapping = HashMap::new();
+    mapping.insert("tx1".to_string(), "gene1".to_string());
+
+    let lines = gene.to_gxf_with_additional_fields::<Gff>(1, Some(&mapping));
+    let text: Vec<String> = lines
+        .into_iter()
+        .map(|line| String::from_utf8(line).unwrap())
+        .collect();
+
+    assert_eq!(
+        text[0],
+        "chr1\tgenepred\tgene\t100\t200\t.\t+\t.\tID=gene1;13=foo;"
+    );
+    assert_eq!(
+        text[1],
+        "chr1\tgenepred\tmRNA\t100\t200\t.\t+\t.\tID=tx1;Parent=gene1;13=foo;"
+    );
+    assert_eq!(
+        text[2],
+        "chr1\tgenepred\texon\t100\t150\t.\t+\t.\tParent=tx1;exon_number=1;13=foo;"
+    );
+    assert_eq!(
+        text[3],
+        "chr1\tgenepred\texon\t170\t200\t.\t+\t.\tParent=tx1;exon_number=2;13=foo;"
+    );
+    assert!(text.contains(
+        &"chr1\tgenepred\tCDS\t120\t150\t.\t+\t0\tParent=tx1;exon_number=1;13=foo;".to_string()
+    ));
+    assert!(text.contains(
+        &"chr1\tgenepred\tCDS\t170\t180\t.\t+\t2\tParent=tx1;exon_number=2;13=foo;".to_string()
+    ));
+    assert!(text.contains(
+        &"chr1\tgenepred\tstart_codon\t120\t122\t.\t+\t.\tParent=tx1;exon_number=1;13=foo;"
+            .to_string()
+    ));
+    assert!(text.contains(
+        &"chr1\tgenepred\tstop_codon\t178\t180\t.\t+\t.\tParent=tx1;exon_number=2;13=foo;"
+            .to_string()
+    ));
+}
+
+#[test]
+fn test_genepred_to_gxf_mapping_uses_name_key() {
+    let mut extras = Extras::new();
+    extras.insert(
+        b"transcript_id".to_vec(),
+        ExtraValue::Scalar(b"txCanonical".to_vec()),
+    );
+
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, extras);
+    gene.set_name(Some(b"txAlias".to_vec()));
+
+    let mut mapping = HashMap::new();
+    mapping.insert("txAlias".to_string(), "geneAlias".to_string());
+
+    let lines = gene.to_gxf::<Gtf>(Some(&mapping));
+    let transcript = String::from_utf8(lines[1].clone()).unwrap();
+
+    assert_eq!(
+        transcript,
+        "chr1\tgenepred\ttranscript\t11\t20\t.\t.\t.\tgene_id \"geneAlias\"; transcript_id \"txCanonical\";"
+    );
+}
+
+#[test]
+fn test_genepred_to_gxf_uses_strand_aware_exon_numbers() {
+    let mut gene = GenePred::from_coords(b"chr2".to_vec(), 0, 90, Extras::new());
+    gene.set_name(Some(b"txR".to_vec()));
+    gene.set_strand(Some(Strand::Reverse));
+    gene.set_block_count(Some(2));
+    gene.set_block_starts(Some(vec![0, 40]));
+    gene.set_block_ends(Some(vec![20, 80]));
+    gene.set_thick_start(Some(10));
+    gene.set_thick_end(Some(80));
+
+    let lines = gene.to_gxf::<Gff>(None);
+    let text: Vec<String> = lines
+        .into_iter()
+        .map(|line| String::from_utf8(line).unwrap())
+        .collect();
+
+    assert_eq!(
+        text[2],
+        "chr2\tgenepred\texon\t1\t20\t.\t-\t.\tParent=txR;exon_number=2;"
+    );
+    assert_eq!(
+        text[3],
+        "chr2\tgenepred\texon\t41\t80\t.\t-\t.\tParent=txR;exon_number=1;"
+    );
+}
+
+#[test]
+#[should_panic(expected = "unsupported GXF layout")]
+fn test_genepred_to_gxf_panics_for_bed_layout() {
+    let gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, Extras::new());
+    let _ = gene.to_gxf::<Bed12>(None);
+}
+
+#[test]
+#[should_panic(expected = "missing numeric GXF additional fields")]
+fn test_genepred_to_gxf_with_additional_fields_panics_when_missing_numeric_extras() {
+    let mut extras = Extras::new();
+    extras.insert(b"13".to_vec(), ExtraValue::Scalar(b"foo".to_vec()));
+    extras.insert(b"note".to_vec(), ExtraValue::Scalar(b"keep".to_vec()));
+
+    let gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, extras);
+    let _ = gene.to_gxf_with_additional_fields::<Gtf>(2, None);
 }

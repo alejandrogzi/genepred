@@ -321,13 +321,20 @@ where
     Ok(genes)
 }
 
+/// Parsed record from a GXF (GTF/GFF) file.
 #[derive(Debug, Clone)]
 struct GxfRecord {
+    /// Chromosome or sequence identifier.
     chrom: Vec<u8>,
+    /// Feature type (e.g., exon, CDS, transcript).
     feature: Vec<u8>,
+    /// 0-based start position.
     start: u64,
+    /// 1-based end position.
     end: u64,
+    /// Strand orientation.
     strand: Strand,
+    /// Attribute key-value pairs.
     attributes: Extras,
 }
 
@@ -419,19 +426,30 @@ fn missing(field: &'static str, line: usize) -> ReaderError {
     )
 }
 
-/// A helper struct to build a `GenePred` record from multiple GXF records.
+/// Accumulates GXF records to build a single `GenePred` record.
 #[derive(Debug, Clone)]
 struct TranscriptBuilder {
+    /// Chromosome identifier.
     chrom: Vec<u8>,
+    /// Strand orientation.
     strand: Strand,
+    /// Explicit transcript boundaries from parent feature.
     transcript_extent: Option<(u64, u64)>,
+    /// Minimum observed start position.
     observed_start: u64,
+    /// Maximum observed end position.
     observed_end: u64,
+    /// Exon intervals.
     exons: Vec<Interval>,
+    /// CDS intervals.
     cds: Vec<Interval>,
+    /// Start codon intervals.
     start_codons: Vec<Interval>,
+    /// Stop codon intervals.
     stop_codons: Vec<Interval>,
+    /// Aggregated attributes.
     extras: Extras,
+    /// Transcript name.
     name: Option<Vec<u8>>,
 }
 
@@ -638,10 +656,12 @@ impl TranscriptBuilder {
     }
 }
 
-/// Represents a genomic interval with a start and end position.
+/// Genomic interval with start and end coordinates.
 #[derive(Debug, Clone, Copy)]
 struct Interval {
+    /// 0-based start position.
     start: u64,
+    /// 1-based end position.
     end: u64,
 }
 

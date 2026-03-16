@@ -67,6 +67,9 @@ impl From<io::Error> for WriterError {
 }
 
 /// A generic writer for emitting `GenePred` records into various formats.
+///
+/// The format is specified by the type parameter `F`, which must implement
+/// [`TargetFormat`].
 pub struct Writer<F> {
     _marker: PhantomData<F>,
 }
@@ -388,14 +391,22 @@ impl TargetFormat for crate::gxf::Gff {
     }
 }
 
+/// BED format variants supported by the writer.
 #[derive(Copy, Clone)]
 enum BedFields {
+    /// 3-column BED format.
     Bed3,
+    /// 4-column BED format.
     Bed4,
+    /// 5-column BED format.
     Bed5,
+    /// 6-column BED format.
     Bed6,
+    /// 8-column BED format.
     Bed8,
+    /// 9-column BED format.
     Bed9,
+    /// 12-column BED format.
     Bed12,
 }
 
@@ -592,9 +603,12 @@ fn write_bed_extras<W: Write>(
     Ok(())
 }
 
+/// GXF format variants (GTF and GFF).
 #[derive(Copy, Clone)]
 enum GxfKind {
+    /// GTF format.
     Gtf,
+    /// GFF/GFF3 format.
     Gff,
 }
 
