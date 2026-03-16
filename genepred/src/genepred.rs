@@ -1,8 +1,10 @@
+use std::any::{type_name, TypeId};
 use std::collections::{hash_map::Entry, HashMap};
 use std::fmt;
 
 use crate::{
     bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9, BedFormat},
+    gxf::{Gff, Gtf},
     strand::Strand,
 };
 
@@ -239,7 +241,9 @@ impl fmt::Display for ExtraValue {
 
 /// Iterator over the values stored within an [`ExtraValue`].
 pub enum ExtraValueIter<'a> {
+    /// Single scalar value.
     Scalar(Option<&'a [u8]>),
+    /// Multiple array values.
     Array(std::slice::Iter<'a, Vec<u8>>),
 }
 
@@ -416,6 +420,11 @@ impl GenePred {
     /// Sets the block ends.
     pub fn set_block_ends(&mut self, block_ends: Option<Vec<u64>>) {
         self.block_ends = block_ends;
+    }
+
+    /// Set the RGB color of the feature as an ExtraValue
+    pub fn set_item_rgb(&mut self, rgb: Vec<u8>) {
+        self.extras.insert(b"rgb".to_vec(), ExtraValue::Scalar(rgb));
     }
 
     /// Sets the entire extras map.
@@ -878,7 +887,14 @@ impl GenePred {
         }
 
         if field_count >= 9 {
-            fields.push(b"0,0,0".to_vec());
+            // INFO: try to get rgb from Extras, rollback to 0,0,0 if not found
+            let rgb = self
+                .extras
+                .get(b"rgb".as_slice())
+                .and_then(|extra| extra.first())
+                .unwrap_or(b"0,0,0");
+
+            fields.push(rgb.to_vec());
         }
 
         if field_count == 12 {
@@ -899,6 +915,190 @@ impl GenePred {
         }
 
         join_bed_fields(fields)
+    }
+
+    /// Builds GTF or GFF lines for this record.
+    ///
+    /// The output always includes a `gene` feature, a transcript-like feature
+    /// (`transcript` for GTF, `mRNA` for GFF), exon rows, and coding rows when
+    /// a coding span is present. Child rows include a strand-aware
+    /// `exon_number` attribute.
+    ///
+    /// The optional `transcript_gene_map` is keyed by `GenePred.name` text.
+    /// When a mapping exists, the mapped value is used as the gene identifier.
+    /// Otherwise, the resolved transcript identifier is reused as the gene
+    /// identifier.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `K` is not exactly `Gtf` or `Gff`.
+    pub fn to_gxf<K>(&self, transcript_gene_map: Option<&HashMap<String, String>>) -> Vec<Vec<u8>>
+    where
+        K: BedFormat,
+    {
+        self.to_gxf_with_additional_fields::<K>(0, transcript_gene_map)
+    }
+
+    /// Builds GTF or GFF lines for this record and appends up to `N` numeric
+    /// extras as attributes on every emitted row.
+    ///
+    /// Numeric extras are selected by parsing extra keys as unsigned integers,
+    /// sorting them numerically, and taking the first `N`. Child rows include
+    /// a strand-aware `exon_number` attribute.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `K` is not exactly `Gtf` or `Gff`, or when fewer than
+    /// `additional_fields` numeric extras are available.
+    pub fn to_gxf_with_additional_fields<K>(
+        &self,
+        additional_fields: usize,
+        transcript_gene_map: Option<&HashMap<String, String>>,
+    ) -> Vec<Vec<u8>>
+    where
+        K: BedFormat,
+    {
+        let kind = gxf_output_kind::<K>();
+        let transcript_id = resolve_gxf_transcript_id(self);
+        let gene_id = resolve_gxf_gene_id(self, &transcript_id, transcript_gene_map);
+        let extra_attrs = collect_gxf_additional_attributes(&self.extras, additional_fields);
+
+        let gene_attrs = render_gxf_feature_attributes(
+            kind,
+            GxfFeatureClass::Gene,
+            &gene_id,
+            &transcript_id,
+            None,
+            &extra_attrs,
+        );
+        let transcript_attrs = render_gxf_feature_attributes(
+            kind,
+            GxfFeatureClass::Transcript,
+            &gene_id,
+            &transcript_id,
+            None,
+            &extra_attrs,
+        );
+
+        let strand = self.strand.unwrap_or(Strand::Unknown);
+        let exons = derive_bed_exons(self);
+        let coding_exons =
+            derive_gxf_coding_exons(&exons, self.thick_start, self.thick_end, strand);
+        let cds_segments = compute_gxf_cds_segments(&coding_exons, strand);
+        let start_codon = gxf_start_codon_interval(&coding_exons, strand);
+        let stop_codon = gxf_stop_codon_interval(&coding_exons, strand);
+
+        let mut lines = Vec::with_capacity(
+            2 + exons.len()
+                + cds_segments.len()
+                + usize::from(start_codon.is_some())
+                + usize::from(stop_codon.is_some()),
+        );
+
+        lines.push(build_gxf_line(
+            &self.chrom,
+            b"gene",
+            self.start.saturating_add(1),
+            self.end,
+            strand,
+            None,
+            &gene_attrs,
+        ));
+        lines.push(build_gxf_line(
+            &self.chrom,
+            match kind {
+                GxfOutputKind::Gtf => b"transcript",
+                GxfOutputKind::Gff => b"mRNA",
+            },
+            self.start.saturating_add(1),
+            self.end,
+            strand,
+            None,
+            &transcript_attrs,
+        ));
+
+        for (index, (start, end)) in exons.iter().copied().enumerate() {
+            let exon_number = transcript_exon_number(strand, index, exons.len());
+            let exon_attrs = render_gxf_feature_attributes(
+                kind,
+                GxfFeatureClass::Child,
+                &gene_id,
+                &transcript_id,
+                Some(exon_number),
+                &extra_attrs,
+            );
+            lines.push(build_gxf_line(
+                &self.chrom,
+                b"exon",
+                start.saturating_add(1),
+                end,
+                strand,
+                None,
+                &exon_attrs,
+            ));
+        }
+
+        for (start, end, phase, exon_number) in cds_segments {
+            let cds_attrs = render_gxf_feature_attributes(
+                kind,
+                GxfFeatureClass::Child,
+                &gene_id,
+                &transcript_id,
+                Some(exon_number),
+                &extra_attrs,
+            );
+            lines.push(build_gxf_line(
+                &self.chrom,
+                b"CDS",
+                start.saturating_add(1),
+                end,
+                strand,
+                Some(phase),
+                &cds_attrs,
+            ));
+        }
+
+        if let Some((start, end, exon_number)) = start_codon {
+            let start_codon_attrs = render_gxf_feature_attributes(
+                kind,
+                GxfFeatureClass::Child,
+                &gene_id,
+                &transcript_id,
+                Some(exon_number),
+                &extra_attrs,
+            );
+            lines.push(build_gxf_line(
+                &self.chrom,
+                b"start_codon",
+                start.saturating_add(1),
+                end,
+                strand,
+                None,
+                &start_codon_attrs,
+            ));
+        }
+
+        if let Some((start, end, exon_number)) = stop_codon {
+            let stop_codon_attrs = render_gxf_feature_attributes(
+                kind,
+                GxfFeatureClass::Child,
+                &gene_id,
+                &transcript_id,
+                Some(exon_number),
+                &extra_attrs,
+            );
+            lines.push(build_gxf_line(
+                &self.chrom,
+                b"stop_codon",
+                start.saturating_add(1),
+                end,
+                strand,
+                None,
+                &stop_codon_attrs,
+            ));
+        }
+
+        lines
     }
 }
 
@@ -979,7 +1179,355 @@ fn join_bed_fields(fields: Vec<Vec<u8>>) -> Vec<u8> {
     line
 }
 
+/// Output format for GXF conversion.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GxfOutputKind {
+    /// GTF format.
+    Gtf,
+    /// GFF format.
+    Gff,
+}
+
+/// Feature class for GXF output.
+#[derive(Clone, Copy)]
+enum GxfFeatureClass {
+    /// Gene-level feature.
+    Gene,
+    /// Transcript/mRNA-level feature.
+    Transcript,
+    /// Child feature (exon, CDS, etc.).
+    Child,
+}
+
+/// Returns the GXF output kind for a BED format.
+fn gxf_output_kind<K>() -> GxfOutputKind
+where
+    K: BedFormat,
+{
+    if TypeId::of::<K>() == TypeId::of::<Gtf>() {
+        GxfOutputKind::Gtf
+    } else if TypeId::of::<K>() == TypeId::of::<Gff>() {
+        GxfOutputKind::Gff
+    } else {
+        panic!(
+            "unsupported GXF layout: expected {} or {}, got {}",
+            type_name::<Gtf>(),
+            type_name::<Gff>(),
+            type_name::<K>(),
+        );
+    }
+}
+
+/// Resolves the transcript ID for a gene.
+fn resolve_gxf_transcript_id(record: &GenePred) -> Vec<u8> {
+    record
+        .extras
+        .get(b"transcript_id".as_ref())
+        .and_then(ExtraValue::first)
+        .map(|value| value.to_vec())
+        .or_else(|| {
+            record
+                .extras
+                .get(b"ID".as_ref())
+                .and_then(ExtraValue::first)
+                .map(|value| value.to_vec())
+        })
+        .or_else(|| record.name.clone())
+        .unwrap_or_else(|| b".".to_vec())
+}
+
+/// Resolves the gene ID for a transcript.
+fn resolve_gxf_gene_id(
+    record: &GenePred,
+    transcript_id: &[u8],
+    transcript_gene_map: Option<&HashMap<String, String>>,
+) -> Vec<u8> {
+    if let (Some(name), Some(mapping)) = (record.name.as_ref(), transcript_gene_map) {
+        if let Ok(name_text) = std::str::from_utf8(name) {
+            if let Some(gene_name) = mapping.get(name_text) {
+                return gene_name.as_bytes().to_vec();
+            }
+        }
+    }
+
+    transcript_id.to_vec()
+}
+
+/// Collects GXF additional attributes.
+fn collect_gxf_additional_attributes(
+    extras: &Extras,
+    additional_fields: usize,
+) -> Vec<(Vec<u8>, Vec<u8>)> {
+    if additional_fields == 0 {
+        return Vec::new();
+    }
+
+    let mut numeric: Vec<(u64, Vec<u8>, Vec<u8>)> = Vec::new();
+    for (key, value) in extras {
+        let Ok(key_text) = std::str::from_utf8(key) else {
+            continue;
+        };
+        let Ok(index) = key_text.parse::<u64>() else {
+            continue;
+        };
+        numeric.push((index, key.clone(), render_extra_value(value)));
+    }
+    numeric.sort_by_key(|(index, _, _)| *index);
+
+    assert!(
+        numeric.len() >= additional_fields,
+        "missing numeric GXF additional fields: requested {additional_fields} additional field(s), found {} numeric extra field(s)",
+        numeric.len(),
+    );
+
+    numeric
+        .into_iter()
+        .take(additional_fields)
+        .map(|(_, key, value)| (key, value))
+        .collect()
+}
+
+/// Renders GXF feature attributes.
+fn render_gxf_feature_attributes(
+    kind: GxfOutputKind,
+    class: GxfFeatureClass,
+    gene_id: &[u8],
+    transcript_id: &[u8],
+    exon_number: Option<usize>,
+    additional_attrs: &[(Vec<u8>, Vec<u8>)],
+) -> Vec<u8> {
+    let mut attrs = Vec::with_capacity(additional_attrs.len() + 3);
+
+    match (kind, class) {
+        (GxfOutputKind::Gtf, GxfFeatureClass::Gene) => {
+            attrs.push((b"gene_id".to_vec(), gene_id.to_vec()));
+        }
+        (GxfOutputKind::Gtf, GxfFeatureClass::Transcript | GxfFeatureClass::Child) => {
+            attrs.push((b"gene_id".to_vec(), gene_id.to_vec()));
+            attrs.push((b"transcript_id".to_vec(), transcript_id.to_vec()));
+        }
+        (GxfOutputKind::Gff, GxfFeatureClass::Gene) => {
+            attrs.push((b"ID".to_vec(), gene_id.to_vec()));
+        }
+        (GxfOutputKind::Gff, GxfFeatureClass::Transcript) => {
+            attrs.push((b"ID".to_vec(), transcript_id.to_vec()));
+            attrs.push((b"Parent".to_vec(), gene_id.to_vec()));
+        }
+        (GxfOutputKind::Gff, GxfFeatureClass::Child) => {
+            attrs.push((b"Parent".to_vec(), transcript_id.to_vec()));
+        }
+    }
+
+    if let Some(number) = exon_number {
+        attrs.push((b"exon_number".to_vec(), number.to_string().into_bytes()));
+    }
+
+    attrs.extend(additional_attrs.iter().cloned());
+
+    match kind {
+        GxfOutputKind::Gtf => render_gtf_attributes(&attrs),
+        GxfOutputKind::Gff => render_gff_attributes(&attrs),
+    }
+}
+
+/// Renders a GTF attributes line.
+fn render_gtf_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(attributes.len() * 16);
+    for (key, value) in attributes {
+        out.extend_from_slice(key);
+        out.extend_from_slice(b" \"");
+        out.extend_from_slice(value);
+        out.extend_from_slice(b"\"; ");
+    }
+
+    while out.last().is_some_and(|byte| *byte == b' ') {
+        out.pop();
+    }
+    if out.last().is_some_and(|byte| *byte != b';') {
+        out.push(b';');
+    }
+    out
+}
+
+/// Renders a GFF attributes line.
+fn render_gff_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(attributes.len() * 12);
+    for (index, (key, value)) in attributes.iter().enumerate() {
+        if index > 0 {
+            out.push(b';');
+        }
+        out.extend_from_slice(key);
+        out.push(b'=');
+        out.extend_from_slice(value);
+    }
+    out.push(b';');
+    out
+}
+
+/// Builds a GXF line.
+fn build_gxf_line(
+    chrom: &[u8],
+    feature: &[u8],
+    start_1based: u64,
+    end_1based: u64,
+    strand: Strand,
+    phase: Option<u8>,
+    attributes: &[u8],
+) -> Vec<u8> {
+    let mut line = Vec::with_capacity(chrom.len() + feature.len() + attributes.len() + 40);
+    line.extend_from_slice(chrom);
+    line.push(b'\t');
+    line.extend_from_slice(b"genepred");
+    line.push(b'\t');
+    line.extend_from_slice(feature);
+    line.push(b'\t');
+    append_decimal(&mut line, start_1based);
+    line.push(b'\t');
+    append_decimal(&mut line, end_1based);
+    line.extend_from_slice(b"\t.\t");
+    line.push(match strand {
+        Strand::Forward => b'+',
+        Strand::Reverse => b'-',
+        Strand::Unknown => b'.',
+    });
+    line.push(b'\t');
+    match phase {
+        Some(value) => line.push(b'0' + (value % 3)),
+        None => line.push(b'.'),
+    }
+    line.push(b'\t');
+    line.extend_from_slice(attributes);
+    line
+}
+
+/// Appends a decimal value to a buffer.
+fn append_decimal(out: &mut Vec<u8>, mut value: u64) {
+    if value == 0 {
+        out.push(b'0');
+        return;
+    }
+
+    let mut buf = [0u8; 20];
+    let mut index = buf.len();
+    while value > 0 {
+        index -= 1;
+        buf[index] = b'0' + (value % 10) as u8;
+        value /= 10;
+    }
+    out.extend_from_slice(&buf[index..]);
+}
+
+/// Computes the CDS segments for a coding exon interval.
+fn compute_gxf_cds_segments(
+    coding_exons: &[(u64, u64, usize)],
+    strand: Strand,
+) -> Vec<(u64, u64, u8, usize)> {
+    if coding_exons.is_empty() {
+        return Vec::new();
+    }
+
+    let mut segments = coding_exons.to_vec();
+    if matches!(strand, Strand::Reverse) {
+        segments.reverse();
+    }
+
+    let mut results = Vec::with_capacity(segments.len());
+    let mut consumed = 0u64;
+
+    for (start, end, exon_number) in segments {
+        let len = end.saturating_sub(start);
+        let phase = if len == 0 {
+            0
+        } else {
+            ((3 - (consumed % 3)) % 3) as u8
+        };
+        consumed += len;
+        results.push((start, end, phase, exon_number));
+    }
+
+    if matches!(strand, Strand::Reverse) {
+        results.reverse();
+    }
+
+    results
+}
+
+/// Returns the start codon interval, if present.
+fn gxf_start_codon_interval(
+    coding_exons: &[(u64, u64, usize)],
+    strand: Strand,
+) -> Option<(u64, u64, usize)> {
+    match strand {
+        Strand::Forward | Strand::Unknown => {
+            coding_exons.first().and_then(|(start, end, exon_number)| {
+                let codon_end = (*start + 3).min(*end);
+                (*start < codon_end).then_some((*start, codon_end, *exon_number))
+            })
+        }
+        Strand::Reverse => coding_exons.last().and_then(|(start, end, exon_number)| {
+            let codon_start = end.saturating_sub(3).max(*start);
+            (codon_start < *end).then_some((codon_start, *end, *exon_number))
+        }),
+    }
+}
+
+/// Returns the stop codon interval, if present.
+fn gxf_stop_codon_interval(
+    coding_exons: &[(u64, u64, usize)],
+    strand: Strand,
+) -> Option<(u64, u64, usize)> {
+    match strand {
+        Strand::Forward | Strand::Unknown => {
+            coding_exons.last().and_then(|(start, end, exon_number)| {
+                let codon_start = end.saturating_sub(3).max(*start);
+                (codon_start < *end).then_some((codon_start, *end, *exon_number))
+            })
+        }
+        Strand::Reverse => coding_exons.first().and_then(|(start, end, exon_number)| {
+            let codon_end = (*start + 3).min(*end);
+            (*start < codon_end).then_some((*start, codon_end, *exon_number))
+        }),
+    }
+}
+
+fn derive_gxf_coding_exons(
+    exons: &[(u64, u64)],
+    thick_start: Option<u64>,
+    thick_end: Option<u64>,
+    strand: Strand,
+) -> Vec<(u64, u64, usize)> {
+    match (thick_start, thick_end) {
+        (Some(thick_start), Some(thick_end)) if thick_start < thick_end => exons
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (start, end))| {
+                let coding_start = (*start).max(thick_start);
+                let coding_end = (*end).min(thick_end);
+
+                if coding_start < coding_end {
+                    Some((
+                        coding_start,
+                        coding_end,
+                        transcript_exon_number(strand, index, exons.len()),
+                    ))
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn transcript_exon_number(strand: Strand, exon_index: usize, exon_count: usize) -> usize {
+    match strand {
+        Strand::Reverse => exon_count.saturating_sub(exon_index),
+        Strand::Forward | Strand::Unknown => exon_index + 1,
+    }
+}
+
 impl fmt::Display for GenePred {
+    /// Formats a gene prediction as a string.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = self
             .name

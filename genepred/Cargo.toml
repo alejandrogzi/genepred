@@ -1,6 +1,6 @@
 [package]
 name = "genepred"
-version = "0.0.10"
+version = "0.0.11"
 edition = "2021"
 authors = ["alejandrogzi <alejandrxgzi@gmail.com>"]
 license = "MIT"
