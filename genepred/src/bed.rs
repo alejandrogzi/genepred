@@ -30,7 +30,7 @@ const ITEM_RGB: &str = "itemRgb";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
-/// A type alias for `Rgb` for clarity when used in BED records.
+/// A type alias for [`Rgb`] for clarity when used in BED records.
 pub type ItemRgb = Rgb;
 
 impl Rgb {

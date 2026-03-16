@@ -676,23 +676,29 @@ impl<R: BedFormat + Into<GenePred>> ReaderBuilder<R> {
     }
 }
 
-/// Reader source
+/// Source of data for the reader.
 enum ReaderSource {
+    /// A filesystem path.
     Path(PathBuf),
+    /// A generic reader.
     Reader(Box<dyn Read + Send>),
 }
 
-/// Inner reader source
+/// Internal reader source wrapping different input types.
 enum InnerSource {
+    /// Buffered reader for streaming input.
     Buffered(BufReader<Box<dyn Read + Send>>),
+    /// Memory-mapped file input.
     #[cfg(feature = "mmap")]
     Mmap(MmapInner),
 }
 
-/// Inner mmap reader source
+/// Memory-mapped file input with cursor position.
 #[cfg(feature = "mmap")]
 struct MmapInner {
+    /// The memory-mapped data.
     data: Arc<memmap2::Mmap>,
+    /// Current position in the mapped data.
     cursor: usize,
 }
 
@@ -1425,9 +1431,9 @@ impl<R: BedFormat + Into<GenePred>> Iterator for Reader<R> {
     }
 }
 
-/// An iterator over the records in a `Reader`.
+/// Iterator over records from a `Reader`.
 ///
-/// This struct is created by the `records` method on `Reader`.
+/// Created by the [`Reader::records`] method.
 pub struct Records<'a, R: BedFormat + Into<GenePred>> {
     reader: &'a mut Reader<R>,
 }
@@ -1440,21 +1446,26 @@ impl<'a, R: BedFormat + Into<GenePred>> Iterator for Records<'a, R> {
     }
 }
 
-/// Line span for parallel parsing
+/// Represents a line range for parallel parsing.
 #[cfg(feature = "rayon")]
 #[derive(Clone)]
 struct LineSpan {
+    /// Original line number.
     line_no: usize,
+    /// Start byte offset.
     start: usize,
+    /// End byte offset.
     end: usize,
 }
 
-/// Shared bytes
+/// Shared byte storage for parallel processing.
 #[cfg(feature = "rayon")]
 #[derive(Clone)]
 enum SharedBytes {
+    /// Memory-mapped data.
     #[cfg(feature = "mmap")]
     Mmap(Arc<memmap2::Mmap>),
+    /// Owned buffer data.
     Owned(Arc<Vec<u8>>),
 }
 
@@ -1475,9 +1486,12 @@ impl SharedBytes {
     }
 }
 
+/// Input source for parallel record iteration.
 #[cfg(feature = "rayon")]
 enum ParallelInput {
+    /// Pre-collected GenePred records.
     Preloaded(Vec<GenePred>),
+    /// Raw bytes with line spans for parsing.
     Bytes {
         data: SharedBytes,
         spans: Vec<LineSpan>,
@@ -1509,26 +1523,19 @@ pub struct ParallelChunks<R: BedFormat + Into<GenePred>> {
     _marker: PhantomData<R>,
 }
 
-/// Inner iterator for parallel parsing
-///
-/// This struct is created by the `par_chunks` method on `Reader`.
-///
-/// This requires the `rayon` feature.
+/// Internal state for parallel chunk iteration.
 #[cfg(feature = "rayon")]
 enum ParallelChunksInner<R: BedFormat + Into<GenePred>> {
+    /// Preloaded or byte-based input.
     Input {
         input: ParallelInput,
         chunk_size: usize,
     },
-
+    /// Streaming input for chunked processing.
     Stream(StreamChunkIter<R>),
 }
 
-/// Streaming iterator for parallel parsing
-///
-/// This struct is created by the `par_chunks` method on `Reader`.
-///
-/// This requires the `rayon` feature.
+/// Streaming iterator that yields chunks of records.
 #[cfg(feature = "rayon")]
 struct StreamChunkIter<R: BedFormat + Into<GenePred>> {
     reader: BufReader<Box<dyn Read + Send>>,
@@ -1862,6 +1869,7 @@ fn itoa_buffer(mut value: usize) -> SmallKeyBuffer {
     SmallKeyBuffer { buf, len }
 }
 
+/// Stack-allocated buffer for converting numbers to ASCII digits.
 struct SmallKeyBuffer {
     buf: [u8; 20],
     len: usize,
