@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Alejandro Gonzales-Irribarren <alejandrxgzi@gmail.com>
+// Distributed under the terms of the Apache License, Version 2.0.
+
 #[cfg(feature = "mmap")]
 use std::io::Cursor;
 use std::{
@@ -255,11 +258,7 @@ where
 {
     let mut line = String::with_capacity(2048);
     let mut line_number = 0usize;
-    let parent_attr = options.resolved_parent_attribute::<F>();
-    let child_attr = options.resolved_child_attribute::<F>();
-    let parent_feature = options.resolved_parent_feature::<F>();
-    let child_features = options.child_features_ref();
-    let mut transcripts: HashMap<Vec<u8>, TranscriptBuilder> = HashMap::new();
+    let mut aggregator = GxfAggregator::<F>::new(options);
 
     loop {
         line.clear();
@@ -271,54 +270,152 @@ where
             continue;
         }
 
-        let record = GxfRecord::parse(&line, line_number, F::ATTR_SEPARATOR)?;
-        let is_parent_feature = eq_ignore_ascii(&record.feature, parent_feature.as_ref());
+        match aggregator.ingest_line(&line, line_number) {
+            GxfLineStatus::Aggregated { .. } | GxfLineStatus::Skipped => {}
+            GxfLineStatus::Invalid { error, .. } => return Err(error),
+        }
+    }
+
+    Ok(aggregator
+        .into_genepreds()
+        .into_iter()
+        .map(|(_, gene)| gene)
+        .collect())
+}
+
+/// Result of ingesting a GXF feature line into an aggregator.
+pub(crate) enum GxfLineStatus {
+    /// The line was relevant and attached to a parent feature.
+    Aggregated {
+        /// Parent transcript or record identifier.
+        parent_id: Vec<u8>,
+    },
+    /// The line was syntactically valid but not relevant to aggregation.
+    Skipped,
+    /// The line was invalid.
+    Invalid {
+        /// Parent identifier, when it could be recovered before the error.
+        parent_id: Option<Vec<u8>>,
+        /// Parse or aggregation error.
+        error: ReaderError,
+    },
+}
+
+/// Aggregates GTF/GFF feature lines into canonical `GenePred` records.
+pub(crate) struct GxfAggregator<F: GxfFormat> {
+    /// Attribute used to identify parent features.
+    parent_attr: Vec<u8>,
+    /// Attribute used to associate child features with parents.
+    child_attr: Vec<u8>,
+    /// Feature name treated as a parent transcript record.
+    parent_feature: Vec<u8>,
+    /// Optional allowed child feature names.
+    child_features: Option<Vec<Vec<u8>>>,
+    /// Transcript builders keyed by parent ID.
+    transcripts: HashMap<Vec<u8>, TranscriptBuilder>,
+    /// Marker for the GXF format implementation.
+    _marker: std::marker::PhantomData<F>,
+}
+
+/// Helper methods for GXF aggregation.
+impl<F: GxfFormat> GxfAggregator<F> {
+    /// Creates a new aggregator from reader options.
+    ///
+    /// # Arguments
+    ///
+    /// * `options` - Reader options controlling parent and child feature names.
+    pub(crate) fn new(options: &ReaderOptions<'_>) -> Self {
+        Self {
+            parent_attr: options.resolved_parent_attribute::<F>().into_owned(),
+            child_attr: options.resolved_child_attribute::<F>().into_owned(),
+            parent_feature: options.resolved_parent_feature::<F>().into_owned(),
+            child_features: options.child_features_ref().map(|features| {
+                features
+                    .iter()
+                    .map(|feature| feature.as_ref().to_vec())
+                    .collect()
+            }),
+            transcripts: HashMap::new(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+
+    /// Ingests one non-comment feature line.
+    ///
+    /// # Arguments
+    ///
+    /// * `line` - Raw GTF/GFF feature line.
+    /// * `line_number` - One-based source line number.
+    pub(crate) fn ingest_line(&mut self, line: &str, line_number: usize) -> GxfLineStatus {
+        let record = match GxfRecord::parse(line, line_number, F::ATTR_SEPARATOR) {
+            Ok(record) => record,
+            Err(error) => {
+                return GxfLineStatus::Invalid {
+                    parent_id: None,
+                    error,
+                }
+            }
+        };
+
+        let is_parent_feature = eq_ignore_ascii(&record.feature, &self.parent_feature);
         if !is_parent_feature {
-            if let Some(features) = child_features {
+            if let Some(features) = &self.child_features {
                 if !features
                     .iter()
-                    .any(|feature| eq_ignore_ascii(&record.feature, feature.as_ref()))
+                    .any(|feature| eq_ignore_ascii(&record.feature, feature))
                 {
-                    continue;
+                    return GxfLineStatus::Skipped;
                 }
             }
         }
 
         let attribute_key = if is_parent_feature {
-            parent_attr.as_ref()
+            &self.parent_attr
         } else {
-            child_attr.as_ref()
+            &self.child_attr
         };
         let Some(parent_value) = record
             .attributes
-            .get(attribute_key)
+            .get(attribute_key.as_slice())
             .and_then(ExtraValue::first)
         else {
-            continue;
+            return GxfLineStatus::Skipped;
         };
-        let parent_value = parent_value.to_vec();
+        let parent_id = parent_value.to_vec();
 
-        let entry = transcripts
-            .entry(parent_value.clone())
+        let entry = self
+            .transcripts
+            .entry(parent_id.clone())
             .or_insert_with(|| TranscriptBuilder::new(&record));
 
-        entry.update_bounds(
+        if let Err(error) = entry.update_bounds(
             &record.chrom,
             record.strand,
             record.start,
             record.end,
             line_number,
-        )?;
+        ) {
+            return GxfLineStatus::Invalid {
+                parent_id: Some(parent_id),
+                error,
+            };
+        }
+
         entry.absorb_feature(&record.feature, record.start, record.end, is_parent_feature);
         entry.merge_attributes(&record.attributes);
-        entry.update_name(&record.attributes, &parent_value);
+        entry.update_name(&record.attributes, &parent_id);
+        GxfLineStatus::Aggregated { parent_id }
     }
 
-    let mut genes = Vec::with_capacity(transcripts.len());
-    for (name, builder) in transcripts {
-        genes.push(builder.into_genepred(name));
+    /// Consumes the aggregator and returns `(parent_id, GenePred)` records.
+    pub(crate) fn into_genepreds(self) -> Vec<(Vec<u8>, GenePred)> {
+        let mut genes = Vec::with_capacity(self.transcripts.len());
+        for (name, builder) in self.transcripts {
+            let gene = builder.into_genepred(name.clone());
+            genes.push((name, gene));
+        }
+        genes
     }
-    Ok(genes)
 }
 
 /// Parsed record from a GXF (GTF/GFF) file.

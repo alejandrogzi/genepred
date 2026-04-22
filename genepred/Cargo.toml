@@ -1,6 +1,6 @@
 [package]
 name = "genepred"
-version = "0.0.11"
+version = "0.0.12"
 edition = "2021"
 authors = ["alejandrogzi <alejandrxgzi@gmail.com>"]
 license = "MIT"
@@ -14,6 +14,7 @@ categories = ["data-structures", "science"]
 [features]
 default = ["std"]
 std = []
+cli = ["dep:clap", "dep:log", "dep:simple_logger"]
 rayon = ["dep:rayon"]
 mmap = ["dep:memmap2"]
 gzip = ["dep:flate2"]
@@ -28,6 +29,9 @@ flate2 = { version = "1.0", default-features = false, features = ["rust_backend"
 bzip2 = { version = "0.6", optional = true }
 zstd = { version = "0.13", optional = true }
 memchr = "2.7"
+clap = { version = "4.5", features = ["derive"], optional = true }
+log = { version = "0.4.29", optional = true }
+simple_logger = { version = "5.2", default-features = false, features = ["stderr"], optional = true }
 
 [profile.release]
 lto = true
@@ -36,6 +40,11 @@ codegen-units = 1
 
 [dev-dependencies]
 tempfile = "3.10"
+
+[[bin]]
+name = "genepred"
+path = "src/bin/genepred.rs"
+required-features = ["cli"]
 
 [[test]]
 name = "reader"
@@ -48,3 +57,10 @@ name = "struct"
 path = "tests/struct.rs"
 test = true
 bench = false
+
+[[test]]
+name = "lint_cli"
+path = "tests/lint_cli.rs"
+test = true
+bench = false
+required-features = ["cli"]

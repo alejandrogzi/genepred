@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Alejandro Gonzales-Irribarren <alejandrxgzi@gmail.com>
+// Distributed under the terms of the Apache License, Version 2.0.
+
 use std::fmt;
 
 use crate::{
@@ -151,6 +154,14 @@ pub trait BedFormat: Sized + fmt::Debug + Send + Sync + 'static {
 }
 
 /// Parses a BED field to a `u64`.
+///
+/// Converts a string field to an unsigned 64-bit integer.
+///
+/// # Arguments
+///
+/// * `field` - Field string to parse.
+/// * `line` - Line number for errors.
+/// * `label` - Field label for error messages.
 pub(crate) fn __to_u64(field: &str, line: usize, label: &'static str) -> ReaderResult<u64> {
     field.parse::<u64>().map_err(|_| {
         ReaderError::invalid_field(
@@ -162,6 +173,14 @@ pub(crate) fn __to_u64(field: &str, line: usize, label: &'static str) -> ReaderR
 }
 
 /// Parses a BED field to a `u32`.
+///
+/// Converts a string field to an unsigned 32-bit integer.
+///
+/// # Arguments
+///
+/// * `field` - Field string to parse.
+/// * `line` - Line number for errors.
+/// * `label` - Field label for error messages.
 pub(crate) fn __to_u32(field: &str, line: usize, label: &'static str) -> ReaderResult<u32> {
     field.parse::<u32>().map_err(|_| {
         ReaderError::invalid_field(
@@ -195,6 +214,14 @@ pub(crate) fn __parse_score(field: &str, line: usize) -> ReaderResult<u16> {
 }
 
 /// Parses a comma-separated list of `u32` values.
+///
+/// Splits on commas and parses each value individually.
+///
+/// # Arguments
+///
+/// * `list` - Comma-separated string.
+/// * `line` - Line number for errors.
+/// * `label` - Field label for error messages.
 pub(crate) fn __parse_sizes(
     list: &str,
     line: usize,
