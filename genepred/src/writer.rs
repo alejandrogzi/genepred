@@ -557,6 +557,7 @@ fn derive_exons(record: &GenePred) -> Vec<(u64, u64)> {
 /// Numeric keys are written first in sorted order, followed by non-numeric
 /// keys in alphabetical order. Numeric keys are written as bare values,
 /// while non-numeric keys are written as key=value pairs.
+#[allow(clippy::unnecessary_sort_by)]
 fn write_bed_extras<W: Write>(
     writer: &mut W,
     extras: &Extras,

@@ -1877,11 +1877,7 @@ impl From<Bed12> for GenePred {
 
         let mut block_starts = Vec::with_capacity(record.block_starts.len());
         let mut block_ends = Vec::with_capacity(record.block_starts.len());
-        for (offset, size) in record
-            .block_starts
-            .into_iter()
-            .zip(record.block_sizes.into_iter())
-        {
+        for (offset, size) in record.block_starts.into_iter().zip(record.block_sizes) {
             let start = record.start + offset as u64;
             let end = start + size as u64;
             block_starts.push(start);
