@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Alejandro Gonzales-Irribarren <alejandrxgzi@gmail.com>
+// Distributed under the terms of the Apache License, Version 2.0.
+
 use std::any::TypeId;
 use std::borrow::Cow;
 use std::fmt;
@@ -349,7 +352,13 @@ impl Default for Compression {
     }
 }
 
-/// Detect compression from file extension
+/// Detects compression format from file extension.
+///
+/// Maps common compression extensions to `Compression` variants.
+///
+/// # Arguments
+///
+/// * `path` - The file path to check.
 #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
 fn detect_compression_from_extension(path: &Path) -> Compression {
     let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
@@ -358,6 +367,69 @@ fn detect_compression_from_extension(path: &Path) -> Compression {
         "zst" | "zstd" => Compression::Zstd,
         "bz2" | "bzip2" => Compression::Bzip2,
         _ => Compression::None,
+    }
+}
+
+/// Opens a filesystem path as a raw or decompressed stream.
+///
+/// # Arguments
+///
+/// * `path` - The input path to open.
+pub(crate) fn open_path_stream(path: &Path) -> ReaderResult<Box<dyn Read + Send>> {
+    #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+    {
+        let file = File::open(path)?;
+        return match detect_compression_from_extension(path) {
+            Compression::None | Compression::Auto => Ok(Box::new(file)),
+            Compression::Gzip => {
+                #[cfg(feature = "gzip")]
+                {
+                    Ok(Box::new(MultiGzDecoder::new(file)))
+                }
+                #[cfg(not(feature = "gzip"))]
+                {
+                    Err(ReaderError::Builder(
+                        "ERROR: enable the `gzip` feature to read .gz inputs".into(),
+                    ))
+                }
+            }
+            Compression::Zstd => {
+                #[cfg(feature = "zstd")]
+                {
+                    Ok(Box::new(ZstdDecoder::new(file)?))
+                }
+                #[cfg(not(feature = "zstd"))]
+                {
+                    Err(ReaderError::Builder(
+                        "ERROR: enable the `zstd` feature to read .zst inputs".into(),
+                    ))
+                }
+            }
+            Compression::Bzip2 => {
+                #[cfg(feature = "bz2")]
+                {
+                    Ok(Box::new(BzDecoder::new(file)))
+                }
+                #[cfg(not(feature = "bz2"))]
+                {
+                    Err(ReaderError::Builder(
+                        "ERROR: enable the `bz2` feature to read .bz2 inputs".into(),
+                    ))
+                }
+            }
+        };
+    }
+
+    #[cfg(not(any(feature = "gzip", feature = "zstd", feature = "bz2")))]
+    {
+        if path.extension().is_some_and(|ext| {
+            matches!(ext.to_str(), Some("gz" | "zst" | "zstd" | "bz2" | "bzip2"))
+        }) {
+            return Err(ReaderError::Builder(
+                "ERROR: enable compression features to read compressed inputs".into(),
+            ));
+        }
+        Ok(Box::new(File::open(path)?))
     }
 }
 
@@ -1712,7 +1784,7 @@ impl<R: BedFormat + Into<GenePred>> Iterator for StreamChunkIter<R> {
 
 /// Parse a single line of a BED file.
 ///
-/// This function is used by [`Reader::parse_line`] and [`Reader::parse_lines`].
+/// This function is used by BED parsing helpers.
 ///
 /// # Errors
 ///
@@ -1745,32 +1817,16 @@ fn _parse_line<R: BedFormat>(
     parse_line_bytes::<R>(line.as_bytes(), additional_fields, &keys, line_number)
 }
 
-/// Parse a single line of a BED file.
+/// Parses a line from a BED file (bytes version).
 ///
-/// This function is used by [`Reader::parse_line`] and [`Reader::parse_lines`].
+/// Converts tab-separated bytes to a BedFormat record.
 ///
-/// # Errors
+/// # Arguments
 ///
-/// This function returns an error if the line is empty, or if it has an
-/// unexpected number of fields.
-///
-/// # Example
-///
-/// ```rust,no_run,ignore
-/// use genepred::{Reader, Bed3};
-///
-/// fn main() -> Result<(), Box<dyn std::error::Error>> {
-///     let mut reader = Reader::<Bed3>::from_path("tests/data/simple.bed")?;
-///     let record = reader.parse_line("chr1\t100\t200")?;
-///     println!(
-///         "chrom: {}, start: {}, end: {}",
-///         String::from_utf8_lossy(&record.chrom),
-///         record.start,
-///         record.end
-///     );
-///     Ok(())
-/// }
-/// ```
+/// * `line` - Input line bytes.
+/// * `additional_fields` - Number of extra columns.
+/// * `extra_keys` - Keys for extra columns.
+/// * `line_number` - Current line number for errors.
 fn parse_line_bytes<R: BedFormat>(
     line: &[u8],
     additional_fields: usize,
@@ -1850,7 +1906,42 @@ fn parse_line_bytes<R: BedFormat>(
     R::from_fields(&fields[..R::FIELD_COUNT], extras, line_number)
 }
 
-/// Convert a number to a buffer of ASCII digits
+/// Builds numeric extra keys for a BED layout.
+///
+/// # Arguments
+///
+/// * `additional_fields` - Number of BED fields beyond the standard layout.
+pub(crate) fn bed_extra_keys<R: BedFormat>(additional_fields: usize) -> Vec<Vec<u8>> {
+    build_extra_keys(R::FIELD_COUNT, additional_fields)
+}
+
+/// Parses one BED line into the canonical `GenePred` representation.
+///
+/// # Arguments
+///
+/// * `line` - Raw BED line without its line terminator.
+/// * `additional_fields` - Number of extra fields after the standard BED layout.
+/// * `extra_keys` - Keys assigned to additional fields.
+/// * `line_number` - One-based source line number.
+pub(crate) fn parse_bed_line_bytes<R>(
+    line: &[u8],
+    additional_fields: usize,
+    extra_keys: &[Vec<u8>],
+    line_number: usize,
+) -> ReaderResult<GenePred>
+where
+    R: BedFormat + Into<GenePred>,
+{
+    parse_line_bytes::<R>(line, additional_fields, extra_keys, line_number).map(Into::into)
+}
+
+/// Converts a number to a buffer of ASCII digits.
+///
+/// Stack-allocates a buffer for fast integer-to-string conversion.
+///
+/// # Arguments
+///
+/// * `value` - Number to convert.
 fn itoa_buffer(mut value: usize) -> SmallKeyBuffer {
     const MAX_LEN: usize = 20; // enough for usize
 
@@ -1871,11 +1962,15 @@ fn itoa_buffer(mut value: usize) -> SmallKeyBuffer {
 
 /// Stack-allocated buffer for converting numbers to ASCII digits.
 struct SmallKeyBuffer {
+    /// Fixed-width ASCII digit storage.
     buf: [u8; 20],
+    /// Number of populated bytes at the end of the buffer.
     len: usize,
 }
 
+/// Helper methods for stack-allocated numeric key buffers.
 impl SmallKeyBuffer {
+    /// Copies the populated numeric suffix into a `Vec`.
     fn to_vec(&self) -> Vec<u8> {
         self.buf[self.buf.len() - self.len..].to_vec()
     }
@@ -1883,7 +1978,7 @@ impl SmallKeyBuffer {
 
 /// Build extra keys for parallel parsing
 ///
-/// This function is used by [`Reader::par_chunks`].
+/// This function is used by parallel chunk parsing.
 ///
 /// # Example
 ///
@@ -1909,7 +2004,7 @@ fn build_extra_keys(base_field_count: usize, additional_fields: usize) -> Vec<Ve
 
 /// Trim a line of a BED file.
 ///
-/// This function is used by [`Reader::parse_line`] and [`Reader::parse_lines`].
+/// This function is used by BED line parsing.
 fn trim_line(line: &mut String) {
     while line.ends_with(['\n', '\r']) {
         line.pop();
@@ -1918,7 +2013,7 @@ fn trim_line(line: &mut String) {
 
 /// Returns `true` if the line should be skipped.
 ///
-/// This function is used by [`Reader::parse_line`] and [`Reader::parse_lines`].
+/// This function is used by BED line parsing.
 fn should_skip(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed.is_empty()
