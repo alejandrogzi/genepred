@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Alejandro Gonzales-Irribarren <alejandrxgzi@gmail.com>
+// Distributed under the terms of the Apache License, Version 2.0.
+
 //! # genepred
 //!
 //! A Rust port for reading genomic interval data in BED, GTF, and GFF formats,
@@ -57,11 +60,19 @@
 
 #![cfg_attr(doc, warn(missing_docs))]
 
+/// BED record types and BED parsing helpers.
 pub mod bed;
+/// Command-line support APIs.
+pub mod cli;
+/// Canonical `GenePred` data model.
 pub mod genepred;
+/// GTF/GFF reader and format marker types.
 pub mod gxf;
+/// Input readers and reader configuration.
 pub mod reader;
+/// Strand representation and parsing.
 pub mod strand;
+/// Output writers and writer configuration.
 pub mod writer;
 
 pub use bed::*;

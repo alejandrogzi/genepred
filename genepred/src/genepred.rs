@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Alejandro Gonzales-Irribarren <alejandrxgzi@gmail.com>
+// Distributed under the terms of the Apache License, Version 2.0.
+
 use std::any::{type_name, TypeId};
 use std::collections::{hash_map::Entry, HashMap};
 use std::fmt;
@@ -49,11 +52,41 @@ pub type Extras = HashMap<Vec<u8>, ExtraValue>;
 /// It avoids allocation for the common case where an extra field has a single value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtraValue {
+    /// A single scalar value.
     Scalar(Vec<u8>),
+    /// Multiple values stored in insertion order.
     Array(Vec<Vec<u8>>),
 }
 
 impl ExtraValue {
+    /// Creates a new `ExtraValue` from a scalar value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let scalar = ExtraValue::new_scalar(b"value1".to_vec());
+    /// assert_eq!(scalar, ExtraValue::Scalar(b"value1".to_vec()));
+    /// ```
+    pub fn new_scalar(value: Vec<u8>) -> Self {
+        Self::Scalar(value)
+    }
+
+    /// Creates a new `ExtraValue` from an array of values.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use genepred::genepred::ExtraValue;
+    ///
+    /// let array = ExtraValue::new_array(vec![b"value1".to_vec(), b"value2".to_vec()]);
+    /// assert_eq!(array, ExtraValue::Array(vec![b"value1".to_vec(), b"value2".to_vec()]));
+    /// ```
+    pub fn new_array(values: Vec<Vec<u8>>) -> Self {
+        Self::Array(values)
+    }
+
     /// Returns the first stored value, regardless of representation.
     ///
     /// # Example
@@ -240,6 +273,21 @@ impl fmt::Display for ExtraValue {
 }
 
 /// Iterator over the values stored within an [`ExtraValue`].
+///
+/// # Arguments
+///
+/// * `Scalar` - Single scalar value
+/// * `Array` - Multiple array values
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use genepred::genepred::ExtraValue;
+///
+/// let scalar = ExtraValue::Scalar(b"value1".to_vec());
+/// let values: Vec<&[u8]> = scalar.iter().collect();
+/// assert_eq!(values, vec![b"value1"]);
+/// ```
 pub enum ExtraValueIter<'a> {
     /// Single scalar value.
     Scalar(Option<&'a [u8]>),
@@ -1103,6 +1151,13 @@ impl GenePred {
 }
 
 /// Convert a `Strand` to a BED strand byte.
+///
+/// Converts strand orientation to its single-character representation.
+/// Returns '+' for forward, '-' for reverse, '.' for unknown.
+///
+/// # Arguments
+///
+/// * `strand` - Optional strand orientation.
 fn bed_strand_byte(strand: Option<Strand>) -> u8 {
     match strand {
         Some(Strand::Forward) => b'+',
@@ -1112,6 +1167,13 @@ fn bed_strand_byte(strand: Option<Strand>) -> u8 {
 }
 
 /// Derive BED exons from a `GenePred` record.
+///
+/// Extracts absolute exon coordinates, falling back to the full
+/// transcript span if no explicit exons are defined.
+///
+/// # Arguments
+///
+/// * `record` - GenePred record to extract exons from.
 fn derive_bed_exons(record: &GenePred) -> Vec<(u64, u64)> {
     let mut exons = record.exons();
     if exons.is_empty() {
@@ -1122,6 +1184,12 @@ fn derive_bed_exons(record: &GenePred) -> Vec<(u64, u64)> {
 }
 
 /// Render a BED block sizes field.
+///
+/// Converts exon intervals to comma-separated size values.
+///
+/// # Arguments
+///
+/// * `exons` - Vector of `(start, end)` exon coordinates.
 fn render_block_sizes(exons: &[(u64, u64)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (start, end) in exons {
@@ -1132,6 +1200,13 @@ fn render_block_sizes(exons: &[(u64, u64)]) -> Vec<u8> {
 }
 
 /// Render a BED block starts field.
+///
+/// Converts exon starts to relative offsets from transcript start.
+///
+/// # Arguments
+///
+/// * `exons` - Vector of `(start, end)` exon coordinates.
+/// * `transcript_start` - Absolute start position of transcript.
 fn render_block_starts(exons: &[(u64, u64)], transcript_start: u64) -> Vec<u8> {
     let mut out = Vec::new();
     for (start, _) in exons {
@@ -1147,6 +1222,12 @@ fn render_block_starts(exons: &[(u64, u64)], transcript_start: u64) -> Vec<u8> {
 }
 
 /// Render a BED extra field.
+///
+/// Converts an ExtraValue to bytes for BED output.
+///
+/// # Arguments
+///
+/// * `value` - ExtraValue to render.
 fn render_extra_value(value: &ExtraValue) -> Vec<u8> {
     match value {
         ExtraValue::Scalar(v) => v.clone(),
@@ -1166,6 +1247,12 @@ fn render_extra_value(value: &ExtraValue) -> Vec<u8> {
 }
 
 /// Join BED fields into a single line.
+///
+/// Concatenates fields with tab separators.
+///
+/// # Arguments
+///
+/// * `fields` - Vector of field byte vectors.
 fn join_bed_fields(fields: Vec<Vec<u8>>) -> Vec<u8> {
     let mut line = Vec::new();
     let mut first = true;
@@ -1200,6 +1287,12 @@ enum GxfFeatureClass {
 }
 
 /// Returns the GXF output kind for a BED format.
+///
+/// Determines whether to emit GTF or GFF format based on type.
+///
+/// # Type Parameters
+///
+/// * `K` - BedFormat type parameter.
 fn gxf_output_kind<K>() -> GxfOutputKind
 where
     K: BedFormat,
@@ -1219,6 +1312,12 @@ where
 }
 
 /// Resolves the transcript ID for a gene.
+///
+/// Looks for transcript_id, ID, or name in extras.
+///
+/// # Arguments
+///
+/// * `record` - GenePred record to extract transcript ID from.
 fn resolve_gxf_transcript_id(record: &GenePred) -> Vec<u8> {
     record
         .extras
@@ -1237,6 +1336,14 @@ fn resolve_gxf_transcript_id(record: &GenePred) -> Vec<u8> {
 }
 
 /// Resolves the gene ID for a transcript.
+///
+/// Uses transcript_gene_map if provided, otherwise falls back to transcript_id.
+///
+/// # Arguments
+///
+/// * `record` - GenePred record.
+/// * `transcript_id` - Resolved transcript ID.
+/// * `transcript_gene_map` - Optional mapping from transcript to gene names.
 fn resolve_gxf_gene_id(
     record: &GenePred,
     transcript_id: &[u8],
@@ -1254,6 +1361,13 @@ fn resolve_gxf_gene_id(
 }
 
 /// Collects GXF additional attributes.
+///
+/// Extracts numeric extras sorted by key for GXF output.
+///
+/// # Arguments
+///
+/// * `extras` - Extra fields map.
+/// * `additional_fields` - Number of numeric fields to collect.
 fn collect_gxf_additional_attributes(
     extras: &Extras,
     additional_fields: usize,
@@ -1288,6 +1402,17 @@ fn collect_gxf_additional_attributes(
 }
 
 /// Renders GXF feature attributes.
+///
+/// Builds formatted attribute string based on format and feature class.
+///
+/// # Arguments
+///
+/// * `kind` - Output format (GTF or GFF).
+/// * `class` - Feature class.
+/// * `gene_id` - Gene identifier.
+/// * `transcript_id` - Transcript identifier.
+/// * `exon_number` - Optional exon number.
+/// * `additional_attrs` - Additional attribute pairs.
 fn render_gxf_feature_attributes(
     kind: GxfOutputKind,
     class: GxfFeatureClass,
@@ -1331,6 +1456,12 @@ fn render_gxf_feature_attributes(
 }
 
 /// Renders a GTF attributes line.
+///
+/// Formats attributes as `key "value";` pairs.
+///
+/// # Arguments
+///
+/// * `attributes` - Vector of `(key, value)` byte pairs.
 fn render_gtf_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::with_capacity(attributes.len() * 16);
     for (key, value) in attributes {
@@ -1350,6 +1481,12 @@ fn render_gtf_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 }
 
 /// Renders a GFF attributes line.
+///
+/// Formats attributes as `key=value;` pairs.
+///
+/// # Arguments
+///
+/// * `attributes` - Vector of `(key, value)` byte pairs.
 fn render_gff_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     let mut out = Vec::with_capacity(attributes.len() * 12);
     for (index, (key, value)) in attributes.iter().enumerate() {
@@ -1365,6 +1502,18 @@ fn render_gff_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 }
 
 /// Builds a GXF line.
+///
+/// Constructs a complete GXF record line with all columns.
+///
+/// # Arguments
+///
+/// * `chrom` - Chromosome identifier.
+/// * `feature` - Feature type.
+/// * `start_1based` - 1-based start position.
+/// * `end_1based` - 1-based end position.
+/// * `strand` - Strand orientation.
+/// * `phase` - Reading frame (0, 1, 2).
+/// * `attributes` - Formatted attributes.
 fn build_gxf_line(
     chrom: &[u8],
     feature: &[u8],
@@ -1401,6 +1550,13 @@ fn build_gxf_line(
 }
 
 /// Appends a decimal value to a buffer.
+///
+/// Converts unsigned integer to decimal string without allocation.
+///
+/// # Arguments
+///
+/// * `out` - Output buffer.
+/// * `value` - Value to append.
 fn append_decimal(out: &mut Vec<u8>, mut value: u64) {
     if value == 0 {
         out.push(b'0');
@@ -1418,6 +1574,13 @@ fn append_decimal(out: &mut Vec<u8>, mut value: u64) {
 }
 
 /// Computes the CDS segments for a coding exon interval.
+///
+/// Calculates phase for each coding exon segment.
+///
+/// # Arguments
+///
+/// * `coding_exons` - Vector of `(start, end, exon_number)`.
+/// * `strand` - Strand orientation.
 fn compute_gxf_cds_segments(
     coding_exons: &[(u64, u64, usize)],
     strand: Strand,
@@ -1453,6 +1616,13 @@ fn compute_gxf_cds_segments(
 }
 
 /// Returns the start codon interval, if present.
+///
+/// Finds the first 3-base interval at the 5' end.
+///
+/// # Arguments
+///
+/// * `coding_exons` - Vector of `(start, end, exon_number)`.
+/// * `strand` - Strand orientation.
 fn gxf_start_codon_interval(
     coding_exons: &[(u64, u64, usize)],
     strand: Strand,
@@ -1472,6 +1642,13 @@ fn gxf_start_codon_interval(
 }
 
 /// Returns the stop codon interval, if present.
+///
+/// Finds the last 3-base interval at the 3' end.
+///
+/// # Arguments
+///
+/// * `coding_exons` - Vector of `(start, end, exon_number)`.
+/// * `strand` - Strand orientation.
 fn gxf_stop_codon_interval(
     coding_exons: &[(u64, u64, usize)],
     strand: Strand,
@@ -1490,6 +1667,16 @@ fn gxf_stop_codon_interval(
     }
 }
 
+/// Derives coding exons from exons and thick regions.
+///
+/// Intersects exons with coding regions to find CDS portions.
+///
+/// # Arguments
+///
+/// * `exons` - Vector of `(start, end)` exon coordinates.
+/// * `thick_start` - Start of coding region.
+/// * `thick_end` - End of coding region.
+/// * `strand` - Strand orientation.
 fn derive_gxf_coding_exons(
     exons: &[(u64, u64)],
     thick_start: Option<u64>,
@@ -1519,6 +1706,16 @@ fn derive_gxf_coding_exons(
     }
 }
 
+/// Returns the exon number for a transcript.
+///
+/// Strand-aware numbering: forward uses 1-based ascending,
+/// reverse uses descending.
+///
+/// # Arguments
+///
+/// * `strand` - Strand orientation.
+/// * `exon_index` - 0-based exon index.
+/// * `exon_count` - Total number of exons.
 fn transcript_exon_number(strand: Strand, exon_index: usize, exon_count: usize) -> usize {
     match strand {
         Strand::Reverse => exon_count.saturating_sub(exon_index),
