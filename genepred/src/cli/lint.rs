@@ -166,11 +166,11 @@ struct RecordOutcome {
 
 /// Resolved BED layout used for typed dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BedLayout {
+pub(crate) struct BedLayout {
     /// Number of standard BED fields.
-    base_fields: usize,
+    pub(crate) base_fields: usize,
     /// Number of additional fields after the standard layout.
-    additional_fields: usize,
+    pub(crate) additional_fields: usize,
 }
 
 /// Lints an input path with default options.
@@ -421,7 +421,7 @@ where
 ///
 /// * `path` - The input file path.
 /// * `options` - Reader options to apply.
-fn open_reader<R>(path: &Path, options: ReaderOptions<'_>) -> ReaderResult<Reader<R>>
+pub(crate) fn open_reader<R>(path: &Path, options: ReaderOptions<'_>) -> ReaderResult<Reader<R>>
 where
     R: BedFormat + Into<GenePred>,
 {
@@ -1137,7 +1137,10 @@ fn validate_blocks(record: &GenePred, line: Option<usize>, diagnostics: &mut Vec
 ///
 /// * `path` - The BED file path.
 /// * `additional_fields` - Optional explicit number of additional BED columns.
-fn detect_bed_layout(path: &Path, additional_fields: Option<usize>) -> ReaderResult<BedLayout> {
+pub(crate) fn detect_bed_layout(
+    path: &Path,
+    additional_fields: Option<usize>,
+) -> ReaderResult<BedLayout> {
     let field_count = first_data_field_count(path)?;
     match (field_count, additional_fields) {
         (Some(field_count), Some(additional_fields)) => {
