@@ -178,7 +178,7 @@ fn write_gtf_allowlist_filters_attributes() {
     Writer::<Gtf>::from_record_with_options(&gene, &mut buf, &opts).unwrap();
     let text = String::from_utf8(buf).unwrap();
     let first_line = text.lines().next().unwrap();
-    let attrs = first_line.split('\t').last().unwrap();
+    let attrs = first_line.split('\t').next_back().unwrap();
     assert!(attrs.contains("tag \"keep\""));
     assert!(!attrs.contains("gene_id"));
     assert!(!attrs.contains("transcript_id"));
@@ -195,7 +195,7 @@ fn write_gtf_gene_transcript_first() {
     Writer::<Gtf>::from_record(&record, &mut buf).unwrap();
     let text = String::from_utf8(buf).unwrap();
     let first_line = text.lines().next().unwrap();
-    let attrs = first_line.split('\t').last().unwrap();
+    let attrs = first_line.split('\t').next_back().unwrap();
     let mut parts = attrs.split(';').filter(|s| !s.trim().is_empty());
 
     assert!(parts
