@@ -1,6 +1,6 @@
 [package]
 name = "genepred"
-version = "0.0.12"
+version = "0.0.13"
 edition = "2021"
 authors = ["alejandrogzi <alejandrxgzi@gmail.com>"]
 license = "MIT"
@@ -40,6 +40,7 @@ codegen-units = 1
 
 [dev-dependencies]
 tempfile = "3.10"
+flate2 = { version = "1.0", default-features = false, features = ["rust_backend"] }
 
 [[bin]]
 name = "genepred"
@@ -61,6 +62,13 @@ bench = false
 [[test]]
 name = "lint_cli"
 path = "tests/lint_cli.rs"
+test = true
+bench = false
+required-features = ["cli"]
+
+[[test]]
+name = "feature_cli"
+path = "tests/feature_cli.rs"
 test = true
 bench = false
 required-features = ["cli"]

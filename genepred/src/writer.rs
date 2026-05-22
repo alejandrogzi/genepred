@@ -171,12 +171,12 @@ where
     ///
     /// The `record` argument is consumed to avoid unnecessary cloning of large
     /// payloads, but the implementation only borrows the data while writing.
-    pub fn from_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
+    pub fn from_record<W: Write + ?Sized>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
         F::write_record_with_options(record, writer, &WriterOptions::default())
     }
 
     /// Writes a single `GenePred` with the provided writer options.
-    pub fn from_record_with_options<W: Write>(
+    pub fn from_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -185,12 +185,15 @@ where
     }
 
     /// Writes all provided `GenePred`s into the target format.
-    pub fn from_records<W: Write>(records: &[GenePred], writer: &mut W) -> WriterResult<()> {
+    pub fn from_records<W: Write + ?Sized>(
+        records: &[GenePred],
+        writer: &mut W,
+    ) -> WriterResult<()> {
         Self::from_records_with_options(records, writer, &WriterOptions::default())
     }
 
     /// Writes all provided `GenePred`s into the target format using options.
-    pub fn from_records_with_options<W: Write>(
+    pub fn from_records_with_options<W: Write + ?Sized>(
         records: &[GenePred],
         writer: &mut W,
         options: &WriterOptions,
@@ -214,90 +217,110 @@ where
         records: &[GenePred],
         options: &WriterOptions,
     ) -> WriterResult<()> {
-        let path = path.as_ref();
-        let file = std::fs::File::create(path)?;
+        from_path_streaming(path, |writer| {
+            Self::from_records_with_options(records, writer, options)
+        })
+    }
+}
 
-        #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
-        let sink: Box<dyn Write> = match compression_from_extension(path) {
-            Compression::Gzip => {
-                #[cfg(feature = "gzip")]
-                {
-                    Box::new(GzEncoder::new(file, GzCompression::fast()))
-                }
-                #[cfg(not(feature = "gzip"))]
-                {
-                    return Err(WriterError::Unsupported(
-                        "enable the `gzip` feature to write .gz outputs".into(),
-                    ));
-                }
-            }
-            Compression::Zstd => {
-                #[cfg(feature = "zstd")]
-                {
-                    let encoder = ZstdEncoder::new(file, 0).map_err(|err| {
-                        WriterError::Io(io::Error::new(io::ErrorKind::Other, err))
-                    })?;
-                    Box::new(encoder.auto_finish())
-                }
-                #[cfg(not(feature = "zstd"))]
-                {
-                    return Err(WriterError::Unsupported(
-                        "enable the `zstd` feature to write .zst outputs".into(),
-                    ));
-                }
-            }
-            Compression::Bzip2 => {
-                #[cfg(feature = "bz2")]
-                {
-                    Box::new(BzEncoder::new(file, BzCompression::fast()))
-                }
-                #[cfg(not(feature = "bz2"))]
-                {
-                    return Err(WriterError::Unsupported(
-                        "enable the `bz2` feature to write .bz2 outputs".into(),
-                    ));
-                }
-            }
-            Compression::None | Compression::Auto => Box::new(file),
-        };
+/// Opens a sink writer for `path`, auto-detecting compression from the file
+/// extension. Returns a boxed [`Write`] backed by the appropriate encoder.
+fn open_sink(path: &Path) -> WriterResult<Box<dyn Write>> {
+    let file = std::fs::File::create(path)?;
 
-        #[cfg(not(any(feature = "gzip", feature = "zstd", feature = "bz2")))]
-        let sink: Box<dyn Write> = {
-            if path.extension().is_some_and(|ext| {
-                matches!(ext.to_str(), Some("gz" | "zst" | "zstd" | "bz2" | "bzip2"))
-            }) {
+    #[cfg(any(feature = "gzip", feature = "zstd", feature = "bz2"))]
+    let sink: Box<dyn Write> = match compression_from_extension(path) {
+        Compression::Gzip => {
+            #[cfg(feature = "gzip")]
+            {
+                Box::new(GzEncoder::new(file, GzCompression::fast()))
+            }
+            #[cfg(not(feature = "gzip"))]
+            {
                 return Err(WriterError::Unsupported(
-                    "enable compression features to write compressed outputs".into(),
+                    "enable the `gzip` feature to write .gz outputs".into(),
                 ));
             }
-            Box::new(file)
-        };
+        }
+        Compression::Zstd => {
+            #[cfg(feature = "zstd")]
+            {
+                let encoder = ZstdEncoder::new(file, 0)
+                    .map_err(|err| WriterError::Io(io::Error::new(io::ErrorKind::Other, err)))?;
+                Box::new(encoder.auto_finish())
+            }
+            #[cfg(not(feature = "zstd"))]
+            {
+                return Err(WriterError::Unsupported(
+                    "enable the `zstd` feature to write .zst outputs".into(),
+                ));
+            }
+        }
+        Compression::Bzip2 => {
+            #[cfg(feature = "bz2")]
+            {
+                Box::new(BzEncoder::new(file, BzCompression::fast()))
+            }
+            #[cfg(not(feature = "bz2"))]
+            {
+                return Err(WriterError::Unsupported(
+                    "enable the `bz2` feature to write .bz2 outputs".into(),
+                ));
+            }
+        }
+        Compression::None | Compression::Auto => Box::new(file),
+    };
 
-        let mut writer = BufWriter::with_capacity(64 * 1024, sink);
-        Self::from_records_with_options(records, &mut writer, options)?;
-        writer.flush()?;
-        Ok(())
-    }
+    #[cfg(not(any(feature = "gzip", feature = "zstd", feature = "bz2")))]
+    let sink: Box<dyn Write> = {
+        if path.extension().is_some_and(|ext| {
+            matches!(ext.to_str(), Some("gz" | "zst" | "zstd" | "bz2" | "bzip2"))
+        }) {
+            return Err(WriterError::Unsupported(
+                "enable compression features to write compressed outputs".into(),
+            ));
+        }
+        Box::new(file)
+    };
+
+    Ok(sink)
+}
+
+/// Opens `path` for streaming output, auto-detecting compression by extension.
+///
+/// The buffered writer is passed to `emit`, flushed on success, and dropped
+/// when this function returns. Use this when you need to stream records that
+/// are produced lazily and cannot be materialised into a `&[GenePred]` slice.
+pub fn from_path_streaming<P, EmitFn>(path: P, emit: EmitFn) -> WriterResult<()>
+where
+    P: AsRef<Path>,
+    EmitFn: FnOnce(&mut dyn Write) -> WriterResult<()>,
+{
+    let sink = open_sink(path.as_ref())?;
+    let mut writer = BufWriter::with_capacity(64 * 1024, sink);
+    emit(&mut writer)?;
+    writer.flush()?;
+    Ok(())
 }
 
 /// Trait implemented by all supported output formats.
 pub trait TargetFormat {
     /// Writes a single `GenePred` record to the writer in the target format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
     ) -> WriterResult<()>;
 
     /// Writes a record with default options.
-    fn write_record<W: Write>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
+    fn write_record<W: Write + ?Sized>(record: &GenePred, writer: &mut W) -> WriterResult<()> {
         Self::write_record_with_options(record, writer, &WriterOptions::default())
     }
 }
 
 impl TargetFormat for Bed3 {
     /// Writes a `GenePred` record in BED3 format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -308,7 +331,7 @@ impl TargetFormat for Bed3 {
 
 impl TargetFormat for Bed4 {
     /// Writes a `GenePred` record in BED4 format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -319,7 +342,7 @@ impl TargetFormat for Bed4 {
 
 impl TargetFormat for Bed5 {
     /// Writes a `GenePred` record in BED5 format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -330,7 +353,7 @@ impl TargetFormat for Bed5 {
 
 impl TargetFormat for Bed6 {
     /// Writes a `GenePred` record in BED6 format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -341,7 +364,7 @@ impl TargetFormat for Bed6 {
 
 impl TargetFormat for Bed8 {
     /// Writes a `GenePred` record in BED8 format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -352,7 +375,7 @@ impl TargetFormat for Bed8 {
 
 impl TargetFormat for Bed9 {
     /// Writes a `GenePred` record in BED9 format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -363,7 +386,7 @@ impl TargetFormat for Bed9 {
 
 impl TargetFormat for Bed12 {
     /// Writes a `GenePred` record in BED12 format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -374,7 +397,7 @@ impl TargetFormat for Bed12 {
 
 impl TargetFormat for crate::gxf::Gtf {
     /// Writes a `GenePred` record in GTF format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -385,7 +408,7 @@ impl TargetFormat for crate::gxf::Gtf {
 
 impl TargetFormat for crate::gxf::Gff {
     /// Writes a `GenePred` record in GFF format.
-    fn write_record_with_options<W: Write>(
+    fn write_record_with_options<W: Write + ?Sized>(
         record: &GenePred,
         writer: &mut W,
         options: &WriterOptions,
@@ -417,7 +440,7 @@ enum BedFields {
 ///
 /// This function handles the common BED fields and delegates format-specific
 /// fields based on the `kind` parameter.
-fn write_bed_core<W: Write>(
+fn write_bed_core<W: Write + ?Sized>(
     record: &GenePred,
     writer: &mut W,
     kind: BedFields,
@@ -558,7 +581,7 @@ fn derive_exons(record: &GenePred) -> Vec<(u64, u64)> {
 /// keys in alphabetical order. Numeric keys are written as bare values,
 /// while non-numeric keys are written as key=value pairs.
 #[allow(clippy::unnecessary_sort_by)]
-fn write_bed_extras<W: Write>(
+fn write_bed_extras<W: Write + ?Sized>(
     writer: &mut W,
     extras: &Extras,
     options: &WriterOptions,
@@ -620,7 +643,7 @@ enum GxfKind {
 ///
 /// This function generates multiple feature lines: transcript/mRNA, exons,
 /// CDS segments, start codon, and stop codon as appropriate.
-fn write_gxf<W: Write>(
+fn write_gxf<W: Write + ?Sized>(
     record: &GenePred,
     writer: &mut W,
     kind: GxfKind,
@@ -1034,7 +1057,7 @@ fn render_gff_attributes(pairs: &mut [(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 /// seqid, source, type, start, end, score, strand, phase, attributes.
 /// Coordinates are 1-based as required by GTF/GFF standards.
 #[allow(clippy::too_many_arguments)]
-fn write_gxf_feature<W: Write>(
+fn write_gxf_feature<W: Write + ?Sized>(
     writer: &mut W,
     chrom: &[u8],
     feature: &[u8],
@@ -1098,7 +1121,7 @@ fn strand_byte(strand: Option<Strand>) -> u8 {
 /// Writes an RGB color value in BED format.
 ///
 /// BED format uses comma-separated RGB values: r,g,b
-fn write_item_rgb<W: Write>(writer: &mut W, rgb: Rgb) -> io::Result<()> {
+fn write_item_rgb<W: Write + ?Sized>(writer: &mut W, rgb: Rgb) -> io::Result<()> {
     let Rgb(r, g, b) = rgb;
     write_u64(writer, r as u64)?;
     writer.write_all(b",")?;
@@ -1150,7 +1173,7 @@ fn render_value(value: &ExtraValue) -> Vec<u8> {
 ///
 /// This is a fast implementation that avoids allocations by using
 /// a stack buffer and writing digits from right to left.
-fn write_u64<W: Write>(writer: &mut W, mut value: u64) -> io::Result<()> {
+fn write_u64<W: Write + ?Sized>(writer: &mut W, mut value: u64) -> io::Result<()> {
     let mut buf = [0u8; 20];
     let mut idx = buf.len();
     if value == 0 {

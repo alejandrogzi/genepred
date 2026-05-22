@@ -88,6 +88,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### CLI
+
+Build the binary with the `cli` feature enabled, then run subcommands against BED/GTF/GFF input (compression auto-detected by extension):
+
+```bash
+# Validate an annotation
+genepred lint annotations.gtf
+
+# Emit feature intervals as BED (defaults to BED6 on stdout)
+genepred exons    annotations.gtf
+genepred cds      -t 6 -i annotations.bed.gz -o cds.bed
+genepred introns  annotations.bed
+genepred utr      -a gene_id,gene_name annotations.gtf > utr.bed
+genepred fiveutr  -i annotations.gff -o five.bed.gz
+genepred threeutr --type 9 annotations.gtf > three_utr9.bed
+```
+
+Flags shared by `exons`, `cds`, `introns`, `utr`, `fiveutr`, and `threeutr`:
+
+- `-i, --input PATH` (or positional) — input BED/GTF/GFF, optionally compressed
+- `-o, --output PATH` — write BED to a file (auto-detects `.gz` / `.zst` / `.bz2`); defaults to stdout
+- `-t, --type N` — output BED width; one of `3, 4, 5, 6, 8, 9` (default `6`)
+- `-a, --additional-fields NAMES` — comma-separated attribute names appended as trailing columns
+  (e.g. `-a gene_id,gene_name`); missing attributes render as `.` so columns stay aligned
+
 ### Features
 
 - `mmap`: Enable memory-mapped file support (adds `memmap2` dependency)
