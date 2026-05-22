@@ -10,8 +10,8 @@
   </span>
 
   <p align="center">
-    <a href="https://img.shields.io/badge/version-0.0.11-green" target="_blank">
-      <img alt="Version Badge" src="https://img.shields.io/badge/version-0.0.11-green">
+    <a href="https://img.shields.io/badge/version-0.0.13-green" target="_blank">
+      <img alt="Version Badge" src="https://img.shields.io/badge/version-0.0.13-green">
     </a>
     <a href="https://crates.io/crates/genepred" target="_blank">
       <img alt="Crates.io Version" src="https://img.shields.io/crates/v/genepred">
