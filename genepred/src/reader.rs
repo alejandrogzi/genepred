@@ -280,6 +280,14 @@ impl<'a> ReaderOptions<'a> {
         self.child_features.as_deref()
     }
 
+    /// Returns whether a parent attribute was explicitly configured.
+    ///
+    /// When set, the resolved parent id is used as `GenePred.name` instead of
+    /// the human-readable name heuristic.
+    pub(crate) fn has_explicit_parent_attribute(&self) -> bool {
+        self.parent_attribute.is_some()
+    }
+
     /// Converts the options into owned values.
     pub(crate) fn into_owned(self) -> ReaderOptions<'static> {
         ReaderOptions {

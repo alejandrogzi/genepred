@@ -967,7 +967,7 @@ impl GenePred {
 
     /// Builds GTF or GFF lines for this record.
     ///
-    /// The output always includes a `gene` feature, a transcript-like feature
+    /// The output includes a `gene` feature, a transcript-like feature
     /// (`transcript` for GTF, `mRNA` for GFF), exon rows, and coding rows when
     /// a coding span is present. Child rows include a strand-aware
     /// `exon_number` attribute.
@@ -984,7 +984,7 @@ impl GenePred {
     where
         K: BedFormat,
     {
-        self.to_gxf_with_additional_fields::<K>(0, transcript_gene_map)
+        self.to_gxf_with_options::<K>(&GxfOptions::default(), transcript_gene_map)
     }
 
     /// Builds GTF or GFF lines for this record and appends up to `N` numeric
@@ -1006,11 +1006,38 @@ impl GenePred {
     where
         K: BedFormat,
     {
+        self.to_gxf_with_options::<K>(
+            &GxfOptions {
+                additional_fields,
+                gene_line: GeneLine::Include,
+            },
+            transcript_gene_map,
+        )
+    }
+
+    /// Builds only the `gene` feature line for this record.
+    ///
+    /// Intended for callers that aggregate isoforms into a single gene and emit
+    /// the transcript bodies separately via [`GeneLine::Omit`]. The gene span is
+    /// taken from this record's `start`/`end`, so pass a record carrying the
+    /// desired (e.g. union-of-isoforms) coordinates.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `K` is not exactly `Gtf` or `Gff`, or when fewer than
+    /// `additional_fields` numeric extras are available.
+    pub fn to_gxf_gene_line<K>(
+        &self,
+        additional_fields: usize,
+        transcript_gene_map: Option<&HashMap<String, String>>,
+    ) -> Vec<u8>
+    where
+        K: BedFormat,
+    {
         let kind = gxf_output_kind::<K>();
         let transcript_id = resolve_gxf_transcript_id(self);
         let gene_id = resolve_gxf_gene_id(self, &transcript_id, transcript_gene_map);
         let extra_attrs = collect_gxf_additional_attributes(&self.extras, additional_fields);
-
         let gene_attrs = render_gxf_feature_attributes(
             kind,
             GxfFeatureClass::Gene,
@@ -1019,6 +1046,47 @@ impl GenePred {
             None,
             &extra_attrs,
         );
+        let strand = self.strand.unwrap_or(Strand::Unknown);
+        build_gxf_line(
+            &self.chrom,
+            b"gene",
+            self.start.saturating_add(1),
+            self.end,
+            strand,
+            None,
+            &gene_attrs,
+        )
+    }
+
+    /// Builds GTF or GFF lines for this record using the supplied [`GxfOptions`].
+    ///
+    /// This is the core builder behind [`GenePred::to_gxf`] and
+    /// [`GenePred::to_gxf_with_additional_fields`]. Set
+    /// [`GxfOptions::gene_line`] to [`GeneLine::Omit`] to skip the `gene`
+    /// feature line, for callers that aggregate isoforms and emit a single gene
+    /// line themselves (see [`GenePred::to_gxf_gene_line`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics when `K` is not exactly `Gtf` or `Gff`, or when fewer than
+    /// `options.additional_fields` numeric extras are available.
+    pub fn to_gxf_with_options<K>(
+        &self,
+        options: &GxfOptions,
+        transcript_gene_map: Option<&HashMap<String, String>>,
+    ) -> Vec<Vec<u8>>
+    where
+        K: BedFormat,
+    {
+        let GxfOptions {
+            additional_fields,
+            gene_line,
+        } = *options;
+        let kind = gxf_output_kind::<K>();
+        let transcript_id = resolve_gxf_transcript_id(self);
+        let gene_id = resolve_gxf_gene_id(self, &transcript_id, transcript_gene_map);
+        let extra_attrs = collect_gxf_additional_attributes(&self.extras, additional_fields);
+
         let transcript_attrs = render_gxf_feature_attributes(
             kind,
             GxfFeatureClass::Transcript,
@@ -1036,22 +1104,35 @@ impl GenePred {
         let start_codon = gxf_start_codon_interval(&coding_exons, strand);
         let stop_codon = gxf_stop_codon_interval(&coding_exons, strand);
 
+        let include_gene = matches!(gene_line, GeneLine::Include);
         let mut lines = Vec::with_capacity(
-            2 + exons.len()
+            usize::from(include_gene)
+                + 1
+                + exons.len()
                 + cds_segments.len()
                 + usize::from(start_codon.is_some())
                 + usize::from(stop_codon.is_some()),
         );
 
-        lines.push(build_gxf_line(
-            &self.chrom,
-            b"gene",
-            self.start.saturating_add(1),
-            self.end,
-            strand,
-            None,
-            &gene_attrs,
-        ));
+        if include_gene {
+            let gene_attrs = render_gxf_feature_attributes(
+                kind,
+                GxfFeatureClass::Gene,
+                &gene_id,
+                &transcript_id,
+                None,
+                &extra_attrs,
+            );
+            lines.push(build_gxf_line(
+                &self.chrom,
+                b"gene",
+                self.start.saturating_add(1),
+                self.end,
+                strand,
+                None,
+                &gene_attrs,
+            ));
+        }
         lines.push(build_gxf_line(
             &self.chrom,
             match kind {
@@ -1264,6 +1345,37 @@ fn join_bed_fields(fields: Vec<Vec<u8>>) -> Vec<u8> {
         first = false;
     }
     line
+}
+
+/// Whether [`GenePred::to_gxf_with_options`] emits the gene-level feature line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GeneLine {
+    /// Emit the `gene` feature line (default; matches [`GenePred::to_gxf`]).
+    #[default]
+    Include,
+    /// Omit the `gene` feature line; emit only the transcript and child rows.
+    Omit,
+}
+
+/// Options controlling GXF (GTF/GFF) line generation in
+/// [`GenePred::to_gxf_with_options`].
+///
+/// Build from [`Default`] and override the fields you need:
+///
+/// ```rust,ignore
+/// use genepred::{GeneLine, GxfOptions};
+/// let opts = GxfOptions {
+///     gene_line: GeneLine::Omit,
+///     ..Default::default()
+/// };
+/// ```
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct GxfOptions {
+    /// Number of trailing numeric BED extras to append as attributes on every
+    /// emitted row.
+    pub additional_fields: usize,
+    /// Whether to emit the gene-level feature line.
+    pub gene_line: GeneLine,
 }
 
 /// Output format for GXF conversion.

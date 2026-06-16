@@ -311,6 +311,8 @@ pub(crate) struct GxfAggregator<F: GxfFormat> {
     parent_feature: Vec<u8>,
     /// Optional allowed child feature names.
     child_features: Option<Vec<Vec<u8>>>,
+    /// Whether the parent attribute was explicitly configured by the caller.
+    explicit_parent_attribute: bool,
     /// Transcript builders keyed by parent ID.
     transcripts: HashMap<Vec<u8>, TranscriptBuilder>,
     /// Marker for the GXF format implementation.
@@ -335,6 +337,7 @@ impl<F: GxfFormat> GxfAggregator<F> {
                     .map(|feature| feature.as_ref().to_vec())
                     .collect()
             }),
+            explicit_parent_attribute: options.has_explicit_parent_attribute(),
             transcripts: HashMap::new(),
             _marker: std::marker::PhantomData,
         }
@@ -403,7 +406,11 @@ impl<F: GxfFormat> GxfAggregator<F> {
 
         entry.absorb_feature(&record.feature, record.start, record.end, is_parent_feature);
         entry.merge_attributes(&record.attributes);
-        entry.update_name(&record.attributes, &parent_id);
+        entry.update_name(
+            &record.attributes,
+            &parent_id,
+            self.explicit_parent_attribute,
+        );
         GxfLineStatus::Aggregated { parent_id }
     }
 
@@ -651,12 +658,27 @@ impl TranscriptBuilder {
         }
     }
 
-    /// Updates the name of the transcript, preferring specific attributes.
+    /// Updates the name of the transcript.
     ///
-    /// It looks for "transcript_name", "Name", or "gene_name" in the attributes,
-    /// falling back to a provided `fallback` name if none are found.
-    fn update_name(&mut self, attributes: &Extras, fallback: &[u8]) {
+    /// When the caller explicitly configured `parent_attribute`, the resolved
+    /// `parent_id` is used verbatim as the name. `parent_id` is the group key,
+    /// so it is identical for every line of a transcript and order-independent;
+    /// no later line can change it.
+    ///
+    /// Otherwise the historical human-readable heuristic applies: the first of
+    /// "transcript_name", "Name", "gene_name", or "transcript_id" found in the
+    /// attributes wins, falling back to `parent_id` when none are present.
+    fn update_name(
+        &mut self,
+        attributes: &Extras,
+        parent_id: &[u8],
+        explicit_parent_attribute: bool,
+    ) {
         if self.name.is_some() {
+            return;
+        }
+        if explicit_parent_attribute {
+            self.name = Some(parent_id.to_vec());
             return;
         }
         for candidate in [
@@ -670,9 +692,7 @@ impl TranscriptBuilder {
                 return;
             }
         }
-        if self.name.is_none() {
-            self.name = Some(fallback.to_vec());
-        }
+        self.name = Some(parent_id.to_vec());
     }
 
     /// Consumes the builder and produces a `GenePred` record.
@@ -1039,5 +1059,83 @@ mod tests {
     #[test]
     fn parse_empty_attributes() {
         assert_eq!(parse_attributes(b"", b' '), Err(ParseError::Empty));
+    }
+
+    /// Aggregates `lines` through a fresh aggregator and returns the single
+    /// resulting `GenePred`.
+    fn aggregate_one<F: GxfFormat>(options: &ReaderOptions<'_>, lines: &[&str]) -> GenePred {
+        let mut aggregator = GxfAggregator::<F>::new(options);
+        for (index, line) in lines.iter().enumerate() {
+            aggregator.ingest_line(line, index + 1);
+        }
+        let mut genes = aggregator.into_genepreds();
+        assert_eq!(genes.len(), 1, "expected exactly one transcript");
+        genes.pop().unwrap().1
+    }
+
+    #[test]
+    fn gff_explicit_parent_attribute_uses_parent_id_for_gene_parent() {
+        let options = ReaderOptions::new()
+            .parent_feature(b"gene".as_ref())
+            .child_feature(b"mRNA".as_ref())
+            .parent_attribute(b"ID".as_ref())
+            .child_attribute(b"Parent".as_ref());
+
+        let gene = aggregate_one::<Gff>(
+            &options,
+            &[
+                "chr1\tsrc\tgene\t100\t200\t.\t+\t.\tID=AFUB_068240;Name=prm1",
+                "chr1\tsrc\tmRNA\t100\t200\t.\t+\t.\tID=mrna1;Parent=AFUB_068240",
+            ],
+        );
+
+        assert_eq!(gene.name().unwrap(), b"AFUB_068240".as_ref());
+    }
+
+    #[test]
+    fn gff_explicit_parent_attribute_uses_id_for_mrna_parent() {
+        let options = ReaderOptions::new().parent_attribute(b"ID".as_ref());
+
+        let gene = aggregate_one::<Gff>(
+            &options,
+            &[
+                "chr1\tsrc\tmRNA\t100\t200\t.\t+\t.\tID=tx1;Name=friendly_tx",
+                "chr1\tsrc\texon\t100\t200\t.\t+\t.\tParent=tx1",
+            ],
+        );
+
+        assert_eq!(gene.name().unwrap(), b"tx1".as_ref());
+    }
+
+    #[test]
+    fn gff_default_parent_attribute_keeps_name_heuristic() {
+        let options = ReaderOptions::new();
+
+        let gene = aggregate_one::<Gff>(
+            &options,
+            &[
+                "chr1\tsrc\tmRNA\t100\t200\t.\t+\t.\tID=tx1;Name=friendly_tx",
+                "chr1\tsrc\texon\t100\t200\t.\t+\t.\tParent=tx1",
+            ],
+        );
+
+        assert_eq!(gene.name().unwrap(), b"friendly_tx".as_ref());
+    }
+
+    #[test]
+    fn gff_explicit_parent_attribute_is_order_independent() {
+        // Child appears before its parent and carries its own `Name`; the
+        // explicit parent id must still win.
+        let options = ReaderOptions::new().parent_attribute(b"ID".as_ref());
+
+        let gene = aggregate_one::<Gff>(
+            &options,
+            &[
+                "chr1\tsrc\texon\t100\t200\t.\t+\t.\tParent=tx1;Name=child_name",
+                "chr1\tsrc\tmRNA\t100\t200\t.\t+\t.\tID=tx1;Name=friendly_tx",
+            ],
+        );
+
+        assert_eq!(gene.name().unwrap(), b"tx1".as_ref());
     }
 }
