@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use genepred::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9};
-use genepred::{ExtraValue, Extras, GenePred, Gff, Gtf, Strand};
+use genepred::{ExtraValue, Extras, GeneLine, GenePred, Gff, Gtf, GxfOptions, Strand};
 
 #[test]
 fn test_genepred_from_coords() {
@@ -706,4 +706,155 @@ fn test_genepred_to_gxf_with_additional_fields_panics_when_missing_numeric_extra
 
     let gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, extras);
     let _ = gene.to_gxf_with_additional_fields::<Gtf>(2, None);
+}
+
+/// A multi-exon, coding `+` strand gene with two numeric extras (`13`, `14`),
+/// matching the fixtures used by the standard GTF/GFF hierarchy tests.
+fn standard_coding_gene() -> GenePred {
+    let mut extras = Extras::new();
+    extras.insert(b"13".to_vec(), ExtraValue::Scalar(b"foo".to_vec()));
+    extras.insert(
+        b"14".to_vec(),
+        ExtraValue::Array(vec![b"bar".to_vec(), b"baz".to_vec()]),
+    );
+
+    let mut gene = GenePred::from_coords(b"chr1".to_vec(), 99, 200, extras);
+    gene.set_name(Some(b"tx1".to_vec()));
+    gene.set_strand(Some(Strand::Forward));
+    gene.set_block_count(Some(2));
+    gene.set_block_starts(Some(vec![99, 169]));
+    gene.set_block_ends(Some(vec![150, 200]));
+    gene.set_thick_start(Some(119));
+    gene.set_thick_end(Some(180));
+    gene
+}
+
+fn mapping_tx1_gene1() -> HashMap<String, String> {
+    let mut mapping = HashMap::new();
+    mapping.insert("tx1".to_string(), "gene1".to_string());
+    mapping
+}
+
+fn as_text(lines: Vec<Vec<u8>>) -> Vec<String> {
+    lines
+        .into_iter()
+        .map(|line| String::from_utf8(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn test_to_gxf_with_options_include_matches_legacy_methods() {
+    let gene = standard_coding_gene();
+    let mapping = mapping_tx1_gene1();
+
+    assert_eq!(
+        gene.to_gxf_with_options::<Gtf>(&GxfOptions::default(), Some(&mapping)),
+        gene.to_gxf::<Gtf>(Some(&mapping))
+    );
+
+    let opts = GxfOptions {
+        additional_fields: 2,
+        gene_line: GeneLine::Include,
+    };
+    assert_eq!(
+        gene.to_gxf_with_options::<Gtf>(&opts, Some(&mapping)),
+        gene.to_gxf_with_additional_fields::<Gtf>(2, Some(&mapping))
+    );
+}
+
+#[test]
+fn test_to_gxf_omit_drops_only_gene_line_gtf() {
+    let gene = standard_coding_gene();
+    let mapping = mapping_tx1_gene1();
+    let include = GxfOptions {
+        additional_fields: 2,
+        gene_line: GeneLine::Include,
+    };
+    let omit = GxfOptions {
+        additional_fields: 2,
+        gene_line: GeneLine::Omit,
+    };
+
+    let included = gene.to_gxf_with_options::<Gtf>(&include, Some(&mapping));
+    let omitted = gene.to_gxf_with_options::<Gtf>(&omit, Some(&mapping));
+
+    // Omit is exactly Include without its leading `gene` line.
+    assert_eq!(omitted.len() + 1, included.len());
+    assert_eq!(omitted, included[1..].to_vec());
+
+    let text = as_text(omitted);
+    assert!(text[0].contains("\ttranscript\t"));
+    assert!(text
+        .iter()
+        .all(|line| line.split('\t').nth(2) != Some("gene")));
+}
+
+#[test]
+fn test_to_gxf_omit_drops_only_gene_line_gff() {
+    let gene = standard_coding_gene();
+    let mapping = mapping_tx1_gene1();
+    let include = GxfOptions {
+        additional_fields: 1,
+        gene_line: GeneLine::Include,
+    };
+    let omit = GxfOptions {
+        additional_fields: 1,
+        gene_line: GeneLine::Omit,
+    };
+
+    let included = gene.to_gxf_with_options::<Gff>(&include, Some(&mapping));
+    let omitted = gene.to_gxf_with_options::<Gff>(&omit, Some(&mapping));
+
+    assert_eq!(omitted, included[1..].to_vec());
+
+    let text = as_text(omitted);
+    assert!(text[0].contains("\tmRNA\t"));
+    assert!(text
+        .iter()
+        .all(|line| line.split('\t').nth(2) != Some("gene")));
+}
+
+#[test]
+fn test_to_gxf_gene_line_gtf() {
+    let gene = standard_coding_gene();
+    let mapping = mapping_tx1_gene1();
+
+    let line = String::from_utf8(gene.to_gxf_gene_line::<Gtf>(2, Some(&mapping))).unwrap();
+    assert_eq!(
+        line,
+        "chr1\tgenepred\tgene\t100\t200\t.\t+\t.\tgene_id \"gene1\"; 13 \"foo\"; 14 \"bar,baz\";"
+    );
+}
+
+#[test]
+fn test_to_gxf_gene_line_gff() {
+    let gene = standard_coding_gene();
+    let mapping = mapping_tx1_gene1();
+
+    let line = String::from_utf8(gene.to_gxf_gene_line::<Gff>(1, Some(&mapping))).unwrap();
+    assert_eq!(
+        line,
+        "chr1\tgenepred\tgene\t100\t200\t.\t+\t.\tID=gene1;13=foo;"
+    );
+}
+
+#[test]
+fn test_to_gxf_gene_line_reflects_record_span() {
+    // Aggregating callers pass a record carrying the union-of-isoforms span.
+    let mut gene = GenePred::from_coords(b"chrZ".to_vec(), 900, 2200, Extras::new());
+    gene.set_name(Some(b"txU".to_vec()));
+    gene.set_strand(Some(Strand::Reverse));
+
+    let line = String::from_utf8(gene.to_gxf_gene_line::<Gtf>(0, None)).unwrap();
+    assert_eq!(
+        line,
+        "chrZ\tgenepred\tgene\t901\t2200\t.\t-\t.\tgene_id \"txU\";"
+    );
+}
+
+#[test]
+#[should_panic(expected = "unsupported GXF layout")]
+fn test_to_gxf_gene_line_panics_for_bed_layout() {
+    let gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, Extras::new());
+    let _ = gene.to_gxf_gene_line::<Bed12>(0, None);
 }
