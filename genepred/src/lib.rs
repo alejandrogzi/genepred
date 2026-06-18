@@ -76,7 +76,7 @@ pub mod strand;
 pub mod writer;
 
 pub use bed::*;
-pub use genepred::{ExtraValue, Extras, GeneLine, GenePred, GxfOptions};
+pub use genepred::{ExtraValue, Extras, GeneLine, GenePred, GxfOptions, TranscriptParent};
 pub use gxf::{Gff, Gtf};
 pub use reader::{Reader, ReaderBuilder, ReaderMode, ReaderOptions, ReaderResult};
 pub use strand::Strand;
