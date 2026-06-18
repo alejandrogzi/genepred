@@ -2,6 +2,34 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.15] - 2026-06-18
+
+### Added
+
+- `TranscriptParent` enum with `Include` / `Omit` variants, exposed alongside
+  `GxfOptions` from the crate root. `TranscriptParent::Omit` suppresses the GFF
+  `Parent` attribute on the transcript row, producing genuinely top-level
+  transcripts with no dangling gene reference.
+- `GxfOptions::transcript_parent` field — paired with `GeneLine::Omit`, this
+  gives callers a clean `--no-gene` mode where the transcript row references
+  nothing above it and children still hang off the transcript as usual.
+
+### Fixed
+
+- GFF3 ID collision when no gene mapping is available (the gene ID fell back to
+  the transcript ID, causing the `gene` and `mRNA` rows to share an `ID`).
+  The gene row now receives a `gene-`-prefixed identifier (e.g. `gene-tx1`), and
+  the transcript's `Parent` correctly points there. GTF output is unchanged, as
+  it has no ID uniqueness constraint.
+- Self-referential mRNA in no-gene mode without a mapping: `Parent=tx1` on an
+  `ID=tx1` row looped GFF parsers. The transcript is now genuinely top-level
+  when `TranscriptParent::Omit` is set.
+
+### Changed
+
+- `GxfOptions` struct gained the `transcript_parent` field. Existing callers
+  using `..Default::default()` are unaffected.
+
 ## [0.0.14] - 2026-06-16
 
 ### Added
@@ -156,6 +184,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Canonical `GenePred` data model and reader foundations.
 
+[0.0.15]: https://github.com/alejandrogzi/genepred/compare/v0.0.14...v0.0.15
 [0.0.14]: https://github.com/alejandrogzi/genepred/compare/v0.0.13...v0.0.14
 [0.0.13]: https://github.com/alejandrogzi/genepred/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/alejandrogzi/genepred/compare/v0.0.11...v0.0.12

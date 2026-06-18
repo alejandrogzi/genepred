@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use genepred::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9};
-use genepred::{ExtraValue, Extras, GeneLine, GenePred, Gff, Gtf, GxfOptions, Strand};
+use genepred::{
+    ExtraValue, Extras, GeneLine, GenePred, Gff, Gtf, GxfOptions, Strand, TranscriptParent,
+};
 
 #[test]
 fn test_genepred_from_coords() {
@@ -755,6 +757,7 @@ fn test_to_gxf_with_options_include_matches_legacy_methods() {
     let opts = GxfOptions {
         additional_fields: 2,
         gene_line: GeneLine::Include,
+        ..Default::default()
     };
     assert_eq!(
         gene.to_gxf_with_options::<Gtf>(&opts, Some(&mapping)),
@@ -769,10 +772,12 @@ fn test_to_gxf_omit_drops_only_gene_line_gtf() {
     let include = GxfOptions {
         additional_fields: 2,
         gene_line: GeneLine::Include,
+        ..Default::default()
     };
     let omit = GxfOptions {
         additional_fields: 2,
         gene_line: GeneLine::Omit,
+        ..Default::default()
     };
 
     let included = gene.to_gxf_with_options::<Gtf>(&include, Some(&mapping));
@@ -796,10 +801,12 @@ fn test_to_gxf_omit_drops_only_gene_line_gff() {
     let include = GxfOptions {
         additional_fields: 1,
         gene_line: GeneLine::Include,
+        ..Default::default()
     };
     let omit = GxfOptions {
         additional_fields: 1,
         gene_line: GeneLine::Omit,
+        ..Default::default()
     };
 
     let included = gene.to_gxf_with_options::<Gff>(&include, Some(&mapping));
@@ -857,4 +864,114 @@ fn test_to_gxf_gene_line_reflects_record_span() {
 fn test_to_gxf_gene_line_panics_for_bed_layout() {
     let gene = GenePred::from_coords(b"chr1".to_vec(), 10, 20, Extras::new());
     let _ = gene.to_gxf_gene_line::<Bed12>(0, None);
+}
+
+/// Without a gene mapping the gene id falls back to the transcript id. In GFF
+/// that would make the `gene` and `mRNA` rows collide on `ID`, so the gene id
+/// is prefixed with `gene-`; the transcript `Parent` then points at the gene,
+/// never at itself.
+#[test]
+fn test_to_gxf_no_mapping_gff_synthesizes_distinct_gene_id() {
+    let gene = standard_coding_gene();
+    let text = as_text(gene.to_gxf::<Gff>(None));
+
+    assert_eq!(
+        text[0],
+        "chr1\tgenepred\tgene\t100\t200\t.\t+\t.\tID=gene-tx1;"
+    );
+    assert_eq!(
+        text[1],
+        "chr1\tgenepred\tmRNA\t100\t200\t.\t+\t.\tID=tx1;Parent=gene-tx1;"
+    );
+    // Children still hang off the transcript, not the synthesized gene.
+    assert_eq!(
+        text[2],
+        "chr1\tgenepred\texon\t100\t150\t.\t+\t.\tParent=tx1;exon_number=1;"
+    );
+
+    // No two features share an `ID` (GFF3 uniqueness), and the transcript is
+    // not its own parent.
+    let ids: Vec<&str> = text
+        .iter()
+        .filter_map(|line| {
+            line.split('\t')
+                .nth(8)?
+                .split(';')
+                .find_map(|attr| attr.strip_prefix("ID="))
+        })
+        .collect();
+    assert_eq!(ids, vec!["gene-tx1", "tx1"]);
+}
+
+/// GTF has no `ID` uniqueness rule, so the bare `gene_id == transcript_id`
+/// fallback is left untouched: the `gene-` synthesis is GFF-only.
+#[test]
+fn test_to_gxf_no_mapping_gtf_keeps_bare_gene_id() {
+    let gene = standard_coding_gene();
+    let text = as_text(gene.to_gxf::<Gtf>(None));
+
+    assert_eq!(
+        text[0],
+        "chr1\tgenepred\tgene\t100\t200\t.\t+\t.\tgene_id \"tx1\";"
+    );
+    assert_eq!(
+        text[1],
+        "chr1\tgenepred\ttranscript\t100\t200\t.\t+\t.\tgene_id \"tx1\"; transcript_id \"tx1\";"
+    );
+}
+
+/// No-gene mode (`GeneLine::Omit` + `TranscriptParent::Omit`) makes the
+/// transcript top-level: no gene line and no `Parent`, regardless of whether a
+/// mapping exists. This is the `--no-gene` contract.
+#[test]
+fn test_to_gxf_no_gene_mode_makes_transcript_top_level_gff() {
+    let gene = standard_coding_gene();
+    let mapping = mapping_tx1_gene1();
+    let opts = GxfOptions {
+        gene_line: GeneLine::Omit,
+        transcript_parent: TranscriptParent::Omit,
+        ..Default::default()
+    };
+
+    let text = as_text(gene.to_gxf_with_options::<Gff>(&opts, Some(&mapping)));
+
+    // First row is the transcript (no gene line) and carries no `Parent`,
+    // even though tx1 maps to gene1.
+    assert_eq!(text[0], "chr1\tgenepred\tmRNA\t100\t200\t.\t+\t.\tID=tx1;");
+    assert!(text
+        .iter()
+        .all(|line| line.split('\t').nth(2) != Some("gene")));
+    assert!(
+        !text[0].contains("Parent="),
+        "top-level transcript must not carry a Parent: {}",
+        text[0]
+    );
+    // Children still reference the transcript.
+    assert_eq!(
+        text[1],
+        "chr1\tgenepred\texon\t100\t150\t.\t+\t.\tParent=tx1;exon_number=1;"
+    );
+}
+
+/// Regression for the original `--no-gene` report: with no mapping the gene id
+/// equals the transcript id, and emitting `Parent=<gene_id>` produced
+/// `Parent=tx1` on `ID=tx1` — a self-referential mRNA that loops GFF parsers.
+/// In no-gene mode the transcript is top-level and must have no `Parent`.
+#[test]
+fn test_to_gxf_no_gene_mode_no_mapping_has_no_self_parent_gff() {
+    let gene = standard_coding_gene();
+    let opts = GxfOptions {
+        gene_line: GeneLine::Omit,
+        transcript_parent: TranscriptParent::Omit,
+        ..Default::default()
+    };
+
+    let text = as_text(gene.to_gxf_with_options::<Gff>(&opts, None));
+
+    assert_eq!(text[0], "chr1\tgenepred\tmRNA\t100\t200\t.\t+\t.\tID=tx1;");
+    assert!(
+        !text[0].contains("Parent=tx1"),
+        "transcript must not be its own parent: {}",
+        text[0]
+    );
 }

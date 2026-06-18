@@ -1010,6 +1010,7 @@ impl GenePred {
             &GxfOptions {
                 additional_fields,
                 gene_line: GeneLine::Include,
+                transcript_parent: TranscriptParent::Include,
             },
             transcript_gene_map,
         )
@@ -1036,7 +1037,7 @@ impl GenePred {
     {
         let kind = gxf_output_kind::<K>();
         let transcript_id = resolve_gxf_transcript_id(self);
-        let gene_id = resolve_gxf_gene_id(self, &transcript_id, transcript_gene_map);
+        let gene_id = resolve_gxf_gene_line_id::<K>(self, &transcript_id, transcript_gene_map);
         let extra_attrs = collect_gxf_additional_attributes(&self.extras, additional_fields);
         let gene_attrs = render_gxf_feature_attributes(
             kind,
@@ -1045,6 +1046,7 @@ impl GenePred {
             &transcript_id,
             None,
             &extra_attrs,
+            true,
         );
         let strand = self.strand.unwrap_or(Strand::Unknown);
         build_gxf_line(
@@ -1081,10 +1083,13 @@ impl GenePred {
         let GxfOptions {
             additional_fields,
             gene_line,
+            transcript_parent,
         } = *options;
         let kind = gxf_output_kind::<K>();
+        let include_gene = matches!(gene_line, GeneLine::Include);
+        let emit_transcript_parent = matches!(transcript_parent, TranscriptParent::Include);
         let transcript_id = resolve_gxf_transcript_id(self);
-        let gene_id = resolve_gxf_gene_id(self, &transcript_id, transcript_gene_map);
+        let gene_id = resolve_gxf_gene_line_id::<K>(self, &transcript_id, transcript_gene_map);
         let extra_attrs = collect_gxf_additional_attributes(&self.extras, additional_fields);
 
         let transcript_attrs = render_gxf_feature_attributes(
@@ -1094,6 +1099,7 @@ impl GenePred {
             &transcript_id,
             None,
             &extra_attrs,
+            emit_transcript_parent,
         );
 
         let strand = self.strand.unwrap_or(Strand::Unknown);
@@ -1104,7 +1110,6 @@ impl GenePred {
         let start_codon = gxf_start_codon_interval(&coding_exons, strand);
         let stop_codon = gxf_stop_codon_interval(&coding_exons, strand);
 
-        let include_gene = matches!(gene_line, GeneLine::Include);
         let mut lines = Vec::with_capacity(
             usize::from(include_gene)
                 + 1
@@ -1122,6 +1127,7 @@ impl GenePred {
                 &transcript_id,
                 None,
                 &extra_attrs,
+                emit_transcript_parent,
             );
             lines.push(build_gxf_line(
                 &self.chrom,
@@ -1155,6 +1161,7 @@ impl GenePred {
                 &transcript_id,
                 Some(exon_number),
                 &extra_attrs,
+                emit_transcript_parent,
             );
             lines.push(build_gxf_line(
                 &self.chrom,
@@ -1175,6 +1182,7 @@ impl GenePred {
                 &transcript_id,
                 Some(exon_number),
                 &extra_attrs,
+                emit_transcript_parent,
             );
             lines.push(build_gxf_line(
                 &self.chrom,
@@ -1195,6 +1203,7 @@ impl GenePred {
                 &transcript_id,
                 Some(exon_number),
                 &extra_attrs,
+                emit_transcript_parent,
             );
             lines.push(build_gxf_line(
                 &self.chrom,
@@ -1215,6 +1224,7 @@ impl GenePred {
                 &transcript_id,
                 Some(exon_number),
                 &extra_attrs,
+                emit_transcript_parent,
             );
             lines.push(build_gxf_line(
                 &self.chrom,
@@ -1348,6 +1358,14 @@ fn join_bed_fields(fields: Vec<Vec<u8>>) -> Vec<u8> {
 }
 
 /// Whether [`GenePred::to_gxf_with_options`] emits the gene-level feature line.
+///
+/// Omitting the gene line does **not** by itself make the transcript top-level:
+/// the transcript still references a gene via `Parent` (GFF) / `gene_id` (GTF),
+/// because the canonical use of [`GeneLine::Omit`] is isoform aggregation, where
+/// the caller emits a single shared gene line itself (see
+/// [`GenePred::to_gxf_gene_line`]) and every isoform body must still link to it.
+/// To produce a genuinely top-level transcript with no parent, also set
+/// [`GxfOptions::transcript_parent`] to [`TranscriptParent::Omit`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GeneLine {
     /// Emit the `gene` feature line (default; matches [`GenePred::to_gxf`]).
@@ -1357,15 +1375,36 @@ pub enum GeneLine {
     Omit,
 }
 
+/// Whether the transcript row references a parent gene.
+///
+/// Controls the GFF `mRNA` `Parent` attribute (GTF transcript rows always carry
+/// `gene_id`/`transcript_id` per spec and are unaffected).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TranscriptParent {
+    /// Emit `Parent=<gene_id>` on the transcript row (default). Correct whenever
+    /// a gene line exists for it to reference — either inline ([`GeneLine::Include`])
+    /// or emitted separately by an aggregating caller ([`GeneLine::Omit`]).
+    #[default]
+    Include,
+    /// Omit `Parent` entirely, making the transcript a top-level feature. Use
+    /// for gene-less output (e.g. a `--no-gene` mode) where there is no gene for
+    /// the transcript to belong to; emitting a `Parent` there would either
+    /// dangle or, when the gene id was synthesized from the transcript id, point
+    /// the transcript back at itself.
+    Omit,
+}
+
 /// Options controlling GXF (GTF/GFF) line generation in
 /// [`GenePred::to_gxf_with_options`].
 ///
 /// Build from [`Default`] and override the fields you need:
 ///
 /// ```rust,ignore
-/// use genepred::{GeneLine, GxfOptions};
+/// use genepred::{GeneLine, GxfOptions, TranscriptParent};
+/// // Gene-less, top-level transcripts (e.g. for a `--no-gene` mode):
 /// let opts = GxfOptions {
 ///     gene_line: GeneLine::Omit,
+///     transcript_parent: TranscriptParent::Omit,
 ///     ..Default::default()
 /// };
 /// ```
@@ -1376,6 +1415,8 @@ pub struct GxfOptions {
     pub additional_fields: usize,
     /// Whether to emit the gene-level feature line.
     pub gene_line: GeneLine,
+    /// Whether the transcript row references a parent gene.
+    pub transcript_parent: TranscriptParent,
 }
 
 /// Output format for GXF conversion.
@@ -1450,6 +1491,10 @@ fn resolve_gxf_transcript_id(record: &GenePred) -> Vec<u8> {
 /// Resolves the gene ID for a transcript.
 ///
 /// Uses transcript_gene_map if provided, otherwise falls back to transcript_id.
+/// The returned boolean is `true` when the id was *synthesized* from the
+/// transcript id because no mapping matched. In that case the gene and the
+/// transcript would otherwise share an identifier, which is harmless in GTF but
+/// violates GFF3 `ID` uniqueness; see [`synthesize_gff_gene_id`].
 ///
 /// # Arguments
 ///
@@ -1460,16 +1505,55 @@ fn resolve_gxf_gene_id(
     record: &GenePred,
     transcript_id: &[u8],
     transcript_gene_map: Option<&HashMap<String, String>>,
-) -> Vec<u8> {
+) -> (Vec<u8>, bool) {
     if let (Some(name), Some(mapping)) = (record.name.as_ref(), transcript_gene_map) {
         if let Ok(name_text) = std::str::from_utf8(name) {
             if let Some(gene_name) = mapping.get(name_text) {
-                return gene_name.as_bytes().to_vec();
+                return (gene_name.as_bytes().to_vec(), false);
             }
         }
     }
 
-    transcript_id.to_vec()
+    (transcript_id.to_vec(), true)
+}
+
+/// Prefix used to derive a synthetic gene identifier from a transcript id.
+const SYNTHETIC_GENE_PREFIX: &[u8] = b"gene-";
+
+/// Derives a GFF gene `ID` that is distinct from the transcript id.
+///
+/// When no gene mapping is available the resolved gene id equals the transcript
+/// id (see [`resolve_gxf_gene_id`]). Emitting that value as both the `gene`
+/// row's `ID` and the `mRNA` row's `ID` would break GFF3, which requires unique
+/// feature identifiers, so the gene id is prefixed with `gene-`. GTF imposes no
+/// such constraint and keeps the bare transcript id as `gene_id`.
+fn synthesize_gff_gene_id(transcript_id: &[u8]) -> Vec<u8> {
+    let mut id = Vec::with_capacity(SYNTHETIC_GENE_PREFIX.len() + transcript_id.len());
+    id.extend_from_slice(SYNTHETIC_GENE_PREFIX);
+    id.extend_from_slice(transcript_id);
+    id
+}
+
+/// Resolves the gene id stamped on a record's `gene` row and referenced by the
+/// transcript `Parent`, applying the GFF-only distinct-id rule.
+///
+/// Equivalent to [`resolve_gxf_gene_id`], except that when the id was
+/// synthesized (no mapping) and the output is GFF, it is rewritten via
+/// [`synthesize_gff_gene_id`] so the `gene` and `mRNA` rows do not collide.
+fn resolve_gxf_gene_line_id<K>(
+    record: &GenePred,
+    transcript_id: &[u8],
+    transcript_gene_map: Option<&HashMap<String, String>>,
+) -> Vec<u8>
+where
+    K: BedFormat,
+{
+    let (gene_id, synthesized) = resolve_gxf_gene_id(record, transcript_id, transcript_gene_map);
+    if synthesized && matches!(gxf_output_kind::<K>(), GxfOutputKind::Gff) {
+        synthesize_gff_gene_id(transcript_id)
+    } else {
+        gene_id
+    }
 }
 
 /// Collects GXF additional attributes.
@@ -1525,6 +1609,11 @@ fn collect_gxf_additional_attributes(
 /// * `transcript_id` - Transcript identifier.
 /// * `exon_number` - Optional exon number.
 /// * `additional_attrs` - Additional attribute pairs.
+/// * `emit_transcript_parent` - Whether the transcript row should reference a
+///   parent gene. Consulted only for the GFF transcript row: when `false` the
+///   transcript is top-level and carries no `Parent`, otherwise it would
+///   reference a gene that does not exist (or, when the gene id was synthesized
+///   from the transcript id, point back at itself). Ignored for all other rows.
 fn render_gxf_feature_attributes(
     kind: GxfOutputKind,
     class: GxfFeatureClass,
@@ -1532,6 +1621,7 @@ fn render_gxf_feature_attributes(
     transcript_id: &[u8],
     exon_number: Option<usize>,
     additional_attrs: &[(Vec<u8>, Vec<u8>)],
+    emit_transcript_parent: bool,
 ) -> Vec<u8> {
     let mut attrs = Vec::with_capacity(additional_attrs.len() + 3);
 
@@ -1548,7 +1638,9 @@ fn render_gxf_feature_attributes(
         }
         (GxfOutputKind::Gff, GxfFeatureClass::Transcript) => {
             attrs.push((b"ID".to_vec(), transcript_id.to_vec()));
-            attrs.push((b"Parent".to_vec(), gene_id.to_vec()));
+            if emit_transcript_parent {
+                attrs.push((b"Parent".to_vec(), gene_id.to_vec()));
+            }
         }
         (GxfOutputKind::Gff, GxfFeatureClass::Child) => {
             attrs.push((b"Parent".to_vec(), transcript_id.to_vec()));
