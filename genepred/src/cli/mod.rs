@@ -5,6 +5,7 @@ pub mod cds;
 pub mod exons;
 pub mod feature;
 pub mod fiveutr;
+pub mod intergenic;
 pub mod introns;
 pub mod lint;
 pub mod threeutr;

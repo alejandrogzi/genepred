@@ -2,7 +2,7 @@
 // Distributed under the terms of the Apache License, Version 2.0.
 
 //! Integration tests for the feature-extraction subcommands
-//! (`exons`, `cds`, `introns`, `utr`, `fiveutr`, `threeutr`).
+//! (`exons`, `cds`, `introns`, `utr`, `fiveutr`, `threeutr`, `intergenic`).
 
 use std::{fs, process::Command};
 
@@ -123,6 +123,42 @@ fn introns_single_block_empty() {
 }
 
 // ---------------------------------------------------------------------------
+// intergenic
+// ---------------------------------------------------------------------------
+
+/// `intergenic` emits gaps between merged transcript spans on each chromosome.
+#[test]
+fn intergenic_bed3_merges_spans_per_chromosome() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("intergenic.bed");
+    fs::write(
+        &path,
+        "chr2\t0\t10\n\
+         chr1\t100\t200\n\
+         chr1\t250\t300\n\
+         chr1\t290\t350\n\
+         chr1\t350\t400\n",
+    )
+    .unwrap();
+
+    let (code, stdout, _) = run(&["intergenic", path.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "chr1\t200\t250\t.\t0\t.\n");
+}
+
+/// `intergenic --type 3` emits coordinate-only BED.
+#[test]
+fn intergenic_type_3_stdout() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("intergenic_type3.bed");
+    fs::write(&path, "chr1\t0\t10\nchr1\t20\t30\n").unwrap();
+
+    let (code, stdout, _) = run(&["intergenic", "--type", "3", path.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "chr1\t10\t20\n");
+}
+
+// ---------------------------------------------------------------------------
 // utr / fiveutr / threeutr
 // ---------------------------------------------------------------------------
 
@@ -194,6 +230,62 @@ fn bed_type_12_rejected_by_clap() {
     let (code, _, stderr) = run(&["exons", "--type", "12", "tests/data/bed12.bed"]);
     assert_eq!(code, 2);
     assert!(stderr.contains("12 is not in 3..=9"));
+}
+
+// ---------------------------------------------------------------------------
+// --unique
+// ---------------------------------------------------------------------------
+
+/// `--unique --type 3` suppresses duplicate coordinate rows and preserves order.
+#[test]
+fn unique_type3_deduplicates_exons_preserves_order() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("duplicate_exons.bed");
+    fs::write(
+        &path,
+        "chr1\t0\t10\n\
+         chr1\t0\t10\n\
+         chr1\t20\t30\n\
+         chr1\t0\t10\n",
+    )
+    .unwrap();
+
+    let (code, stdout, _) = run(&["exons", "--type", "3", "--unique", path.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "chr1\t0\t10\nchr1\t20\t30\n");
+}
+
+/// `--unique --type 3` applies through the shared feature path, not only exons.
+#[test]
+fn unique_type3_deduplicates_introns() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("duplicate_introns.bed");
+    fs::write(
+        &path,
+        "chr1\t100\t300\ttx1\t0\t+\t100\t300\t0,0,0\t2\t50,50\t0,150\n\
+         chr1\t100\t300\ttx2\t0\t+\t100\t300\t0,0,0\t2\t50,50\t0,150\n",
+    )
+    .unwrap();
+
+    let (code, stdout, _) = run(&["introns", "--type", "3", "--unique", path.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "chr1\t150\t250\n");
+}
+
+/// `--unique` with the default BED6 output is rejected.
+#[test]
+fn unique_default_type_rejected() {
+    let (code, _, stderr) = run(&["exons", "--unique", "tests/data/bed12.bed"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("--unique is only supported with --type 3"));
+}
+
+/// `--unique` is rejected for named BED output rows.
+#[test]
+fn unique_type4_rejected() {
+    let (code, _, stderr) = run(&["exons", "--type", "4", "--unique", "tests/data/bed12.bed"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("--unique is only supported with --type 3"));
 }
 
 // ---------------------------------------------------------------------------

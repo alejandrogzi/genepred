@@ -10,7 +10,7 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use genepred::cli::feature::{FeatureKind, FeatureOptions, FeatureSummary};
 use genepred::cli::lint::{self, Diagnostic, LintMode, LintOptions, LintSummary};
-use genepred::cli::{cds, exons, fiveutr, introns, threeutr, utr};
+use genepred::cli::{cds, exons, fiveutr, intergenic, introns, threeutr, utr};
 use genepred::writer;
 use log::error;
 
@@ -28,6 +28,7 @@ fn run() -> i32 {
         Command::Exons(args) => run_feature(args, FeatureKind::Exons),
         Command::Cds(args) => run_feature(args, FeatureKind::Cds),
         Command::Introns(args) => run_feature(args, FeatureKind::Introns),
+        Command::Intergenic(args) => run_feature(args, FeatureKind::Intergenic),
         Command::Utr(args) => run_feature(args, FeatureKind::Utr),
         Command::Fiveutr(args) => run_feature(args, FeatureKind::FivePrimeUtr),
         Command::Threeutr(args) => run_feature(args, FeatureKind::ThreePrimeUtr),
@@ -73,7 +74,7 @@ fn run_lint(args: LintArgs) -> i32 {
     }
 }
 
-/// Runs a feature-extraction subcommand (exons/cds/introns/utr/fiveutr/threeutr).
+/// Runs a feature-extraction subcommand (exons/cds/introns/utr/fiveutr/threeutr/intergenic).
 fn run_feature(args: FeatureArgs, kind: FeatureKind) -> i32 {
     let input = match args.input_path() {
         Ok(path) => path.clone(),
@@ -87,6 +88,7 @@ fn run_feature(args: FeatureArgs, kind: FeatureKind) -> i32 {
         kind,
         bed_type: args.bed_type,
         additional_fields: args.additional_fields.clone(),
+        unique: args.unique,
     };
 
     let label = kind.label();
@@ -145,6 +147,7 @@ where
         FeatureKind::Exons => exons::run(input, writer, options.clone()),
         FeatureKind::Cds => cds::run(input, writer, options.clone()),
         FeatureKind::Introns => introns::run(input, writer, options.clone()),
+        FeatureKind::Intergenic => intergenic::run(input, writer, options.clone()),
         FeatureKind::Utr => utr::run(input, writer, options.clone()),
         FeatureKind::FivePrimeUtr => fiveutr::run(input, writer, options.clone()),
         FeatureKind::ThreePrimeUtr => threeutr::run(input, writer, options.clone()),
@@ -201,6 +204,8 @@ enum Command {
     Cds(FeatureArgs),
     /// Emit intron intervals as BED
     Introns(FeatureArgs),
+    /// Emit intergenic intervals as BED
+    Intergenic(FeatureArgs),
     /// Emit all UTR intervals as BED
     Utr(FeatureArgs),
     /// Emit 5' UTR intervals (strand-aware) as BED
@@ -254,6 +259,9 @@ struct FeatureArgs {
         value_delimiter = ','
     )]
     additional_fields: Option<Vec<String>>,
+    /// Suppress duplicate BED3 coordinate rows
+    #[arg(long)]
+    unique: bool,
 }
 
 impl FeatureArgs {
