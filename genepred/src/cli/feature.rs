@@ -377,7 +377,7 @@ where
     let reader = open_reader::<R>(path, reader_options)?;
     for result in reader {
         summary.records_in += 1;
-        push_span(result?.into(), spans);
+        push_span(result?, spans);
     }
     Ok(())
 }
@@ -393,7 +393,7 @@ where
     let reader = open_reader::<R>(path, ReaderOptions::default())?;
     for result in reader {
         summary.records_in += 1;
-        push_span(result?.into(), spans);
+        push_span(result?, spans);
     }
     Ok(())
 }
