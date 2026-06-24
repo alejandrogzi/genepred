@@ -2,6 +2,35 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.16] - 2026-06-24
+
+### Added
+
+- `genepred intergenic` subcommand — emits the gaps between merged transcript
+  spans on each chromosome as BED intervals. The subcommand reads the entire
+  input into memory, sorts the spans, merges overlapping or contiguous
+  intervals on the same chromosome, and writes out the gaps. Works with BED
+  and GTF/GFF inputs.
+- `--unique` flag on all feature-extraction subcommands (`exons`, `cds`,
+  `introns`, `utr`, `fiveutr`, `threeutr`, `intergenic`). When passed alongside
+  `--type 3`, duplicate BED3 coordinate rows are silently discarded, keeping
+  only the first occurrence. The flag is rejected for wider BED types where the
+  output identity includes more than just coordinates.
+- `FeatureKind::Intergenic` variant, `FeatureOptions.unique` field, and the
+  `genepred::cli::intergenic` module — all the plumbing needed for the new
+  subcommand and deduplication filter.
+- Integration tests covering intergenic interval computation, BED3-only output,
+  the `--unique` deduplication path, and rejection of `--unique` with wider BED
+  types.
+
+### Changed
+
+- `FeatureOptions` struct gained the `unique` field. Existing callers using
+  `..Default::default()` are unaffected.
+- Refactored the feature-extraction internals so that `intergenic` (a
+  whole-input operation) shares the same BED-type dispatch, writer plumbing,
+  and deduplication path as the per-record subcommands.
+
 ## [0.0.15] - 2026-06-18
 
 ### Added
@@ -184,6 +213,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Canonical `GenePred` data model and reader foundations.
 
+[0.0.16]: https://github.com/alejandrogzi/genepred/compare/v0.0.15...v0.0.16
 [0.0.15]: https://github.com/alejandrogzi/genepred/compare/v0.0.14...v0.0.15
 [0.0.14]: https://github.com/alejandrogzi/genepred/compare/v0.0.13...v0.0.14
 [0.0.13]: https://github.com/alejandrogzi/genepred/compare/v0.0.12...v0.0.13
