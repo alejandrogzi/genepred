@@ -1,0 +1,9 @@
+# +/- mirrored pair carrying one numeric extra (column 13, extra key "13" = 7).
+# txMirP: chrM1 100-380 on +, exons [100,130) [180,220) [320,380), CDS [140,361)
+#   -> coding pieces [180,220) 40 bp (phase 0) and [320,361) 41 bp (phase 2), 81 bp.
+# txMirM: the same transcript mirrored onto - (mirror map x -> 480-x): exons
+#   [100,160) [260,300) [350,380), CDS [119,340) -> coding pieces [260,300) 40 bp
+#   (phase 0) and [119,160) 41 bp (phase 2). Every row of one record is the
+#   mirror of the other's, so the pair pins strand handling on + and - alike.
+chrM1	100	380	txMirP	0	+	140	361	0,0,0	3	30,40,60	0,80,220	7
+chrM1	100	380	txMirM	0	-	119	340	0,0,0	3	60,40,30	0,160,250	7

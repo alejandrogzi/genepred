@@ -1,0 +1,5 @@
+# split stop codon on the - strand. CDS [500,630) sits in three coding pieces of
+# 30 + 28 + 2 bp (60 bp, 20 codons); the lowest piece holds only 2 of the 3 stop
+# bases and the third sits at genomic 597. 0.0.16 truncates the codon to the
+# 2-base piece [500,502); gtf22 emits two codon rows ([597,598) and [500,502)).
+chrS	500	700	txSplit	0	-	500	630	0,0,0	3	2,28,30	0,70,100
