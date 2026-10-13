@@ -1142,6 +1142,235 @@ fn test_gtf22_split_stop_codon_on_minus() {
     );
 }
 
+/// REVM1 MUST-FIX 1 and 2 on the review's own ± counterexamples
+/// (`review017/data/review_cases.bed`, lines 1-2 and 5-6), under the release
+/// options: a transcript with no coding base inside its exons, or with fewer
+/// than three of them, is written as non-coding - gene / transcript / exon rows
+/// only, no CDS, codon or UTR rows.
+///
+/// Derivation (0-based, half-open; the CDS is the exon ∩ [thickStart, thickEnd)
+/// intersection):
+///
+/// * utrP / utrM (chrU 100-300, thick [180,220)): exons [100,120) and [250,270)
+///   on +, [130,150) and [280,300) on -, so [180,220) is wholly intronic on
+///   both strands and every coding piece is empty (0 coding bases). MUST-FIX 1
+///   emitted one `five_prime_utr` and one `three_prime_utr` row per exon here.
+/// * shortP / shortM (chrC 100-200, 2 bp CDS): one exon [130,132) on +, [168,170)
+///   on -, i.e. 2 coding bases - fewer than the three a codon needs. MUST-FIX 2
+///   emitted a 2 bp `start_codon` and a 2 bp `stop_codon` row here.
+///
+/// Three coding bases are a complete codon and are still written, and
+/// `GxfOptions::default()` (no release option) keeps 0.0.16's rows for both
+/// inputs, which is what the golden test pins.
+#[test]
+fn test_release_options_write_non_coding_without_exonic_cds_or_full_codon() {
+    let release = GxfOptions {
+        source: Some("aprime"),
+        utr_rows: true,
+        gtf22: true,
+        gff_escape: true,
+        ..Default::default()
+    };
+
+    // review_cases.bed line 1: chrU 100 300 utrP 0 + 180 220 0,0,0 2 20,20 0,150
+    let utr_p = bed12_record(
+        b"chrU",
+        100,
+        300,
+        b"utrP",
+        Strand::Forward,
+        180,
+        220,
+        &[20, 20],
+        &[0, 150],
+    );
+    // line 2, the same thick interval mirrored onto -: 2 20,20 30,180.
+    let utr_m = bed12_record(
+        b"chrU",
+        100,
+        300,
+        b"utrM",
+        Strand::Reverse,
+        180,
+        220,
+        &[20, 20],
+        &[30, 180],
+    );
+    // line 5: chrC 100 200 shortP 0 + 130 132 0,0,0 1 2 30
+    let short_p = bed12_record(
+        b"chrC",
+        100,
+        200,
+        b"shortP",
+        Strand::Forward,
+        130,
+        132,
+        &[2],
+        &[30],
+    );
+    // line 6, the same mirrored onto -: thick 168,170, exon 2 at 68.
+    let short_m = bed12_record(
+        b"chrC",
+        100,
+        200,
+        b"shortM",
+        Strand::Reverse,
+        168,
+        170,
+        &[2],
+        &[68],
+    );
+
+    assert_eq!(
+        as_text(utr_p.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrU\taprime\tgene\t101\t300\t.\t+\t.\tgene_id \"utrP\";",
+            "chrU\taprime\ttranscript\t101\t300\t.\t+\t.\tgene_id \"utrP\"; transcript_id \"utrP\";",
+            "chrU\taprime\texon\t101\t120\t.\t+\t.\tgene_id \"utrP\"; transcript_id \"utrP\"; exon_number \"1\";",
+            "chrU\taprime\texon\t251\t270\t.\t+\t.\tgene_id \"utrP\"; transcript_id \"utrP\"; exon_number \"2\";",
+        ]
+    );
+    assert_eq!(
+        as_text(utr_m.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrU\taprime\tgene\t101\t300\t.\t-\t.\tgene_id \"utrM\";",
+            "chrU\taprime\ttranscript\t101\t300\t.\t-\t.\tgene_id \"utrM\"; transcript_id \"utrM\";",
+            "chrU\taprime\texon\t131\t150\t.\t-\t.\tgene_id \"utrM\"; transcript_id \"utrM\"; exon_number \"2\";",
+            "chrU\taprime\texon\t281\t300\t.\t-\t.\tgene_id \"utrM\"; transcript_id \"utrM\"; exon_number \"1\";",
+        ]
+    );
+    assert_eq!(
+        as_text(short_p.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrC\taprime\tgene\t101\t200\t.\t+\t.\tgene_id \"shortP\";",
+            "chrC\taprime\ttranscript\t101\t200\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\";",
+            "chrC\taprime\texon\t131\t132\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";",
+        ]
+    );
+    assert_eq!(
+        as_text(short_m.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrC\taprime\tgene\t101\t200\t.\t-\t.\tgene_id \"shortM\";",
+            "chrC\taprime\ttranscript\t101\t200\t.\t-\t.\tgene_id \"shortM\"; transcript_id \"shortM\";",
+            "chrC\taprime\texon\t169\t170\t.\t-\t.\tgene_id \"shortM\"; transcript_id \"shortM\"; exon_number \"1\";",
+        ]
+    );
+
+    // The gate belongs to each release option on its own, so a caller setting
+    // only one of them never gets a UTR, CDS or codon row for these records.
+    for options in [
+        release,
+        GxfOptions {
+            utr_rows: true,
+            gtf22: false,
+            ..release
+        },
+        GxfOptions {
+            utr_rows: false,
+            gtf22: true,
+            ..release
+        },
+    ] {
+        for record in [&utr_p, &utr_m, &short_p, &short_m] {
+            for line in as_text(record.to_gxf_with_options::<Gtf>(&options, None)) {
+                let feature = line.split('\t').nth(2).unwrap();
+                assert!(
+                    !matches!(
+                        feature,
+                        "CDS" | "start_codon" | "stop_codon" | "five_prime_utr" | "three_prime_utr"
+                    ),
+                    "non-coding transcript wrote a {feature} row: {line}"
+                );
+            }
+            // GFF3 is gated the same way, only the UTR feature names differ.
+            for line in as_text(record.to_gxf_with_options::<Gff>(&options, None)) {
+                let feature = line.split('\t').nth(2).unwrap();
+                assert!(
+                    !matches!(
+                        feature,
+                        "CDS" | "start_codon" | "stop_codon" | "five_prime_UTR" | "three_prime_UTR"
+                    ),
+                    "non-coding transcript wrote a {feature} row: {line}"
+                );
+            }
+        }
+    }
+
+    // Three coding bases are one complete codon, so they are still written (and
+    // `gtf22` trims all three out of the CDS rows into the codon rows).
+    let three_p = bed12_record(
+        b"chrC",
+        100,
+        200,
+        b"threeP",
+        Strand::Forward,
+        130,
+        133,
+        &[3],
+        &[30],
+    );
+    let three_rows = as_text(three_p.to_gxf_with_options::<Gtf>(&release, None));
+    assert!(three_rows.contains(
+        &"chrC\taprime\tstart_codon\t131\t133\t.\t+\t0\tgene_id \"threeP\"; transcript_id \"threeP\"; exon_number \"1\";".to_string()
+    ));
+    assert!(three_rows.contains(
+        &"chrC\taprime\tstop_codon\t131\t133\t.\t+\t0\tgene_id \"threeP\"; transcript_id \"threeP\"; exon_number \"1\";".to_string()
+    ));
+    assert_eq!(
+        three_rows
+            .iter()
+            .filter(|line| line.split('\t').nth(2) == Some("CDS"))
+            .count(),
+        0,
+        "the 3 bp CDS is trimmed into the codon rows, not dropped as truncated"
+    );
+
+    // Default options are not gated: 0.0.16 keeps the 2 bp CDS row and its
+    // truncated codon rows, which is the golden test's behaviour.
+    let legacy = as_text(short_p.to_gxf_with_options::<Gtf>(&GxfOptions::default(), None));
+    assert!(legacy.contains(
+        &"chrC\tgenepred\tCDS\t131\t132\t.\t+\t0\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";".to_string()
+    ));
+    assert!(legacy.contains(
+        &"chrC\tgenepred\tstart_codon\t131\t132\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";".to_string()
+    ));
+    assert!(legacy.contains(
+        &"chrC\tgenepred\tstop_codon\t131\t132\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";".to_string()
+    ));
+}
+
+/// Builds a `GenePred` from the BED12 fields of one review counterexample line
+/// (0-based, half-open), the way `read_bed12` reads them.
+#[allow(clippy::too_many_arguments)]
+fn bed12_record(
+    chrom: &[u8],
+    start: u64,
+    end: u64,
+    name: &[u8],
+    strand: Strand,
+    thick_start: u64,
+    thick_end: u64,
+    sizes: &[u32],
+    starts: &[u32],
+) -> GenePred {
+    Bed12 {
+        chrom: chrom.to_vec(),
+        start,
+        end,
+        name: name.to_vec(),
+        score: 0,
+        strand,
+        thick_start,
+        thick_end,
+        item_rgb: genepred::bed::Rgb(0, 0, 0),
+        block_count: sizes.len() as u32,
+        block_sizes: sizes.to_vec(),
+        block_starts: starts.to_vec(),
+        extras: Extras::new(),
+    }
+    .into()
+}
+
 /// SO percent-encoding of a seqid and its IDs (`tests/data/bed12_special_seqid.bed`,
 /// whose seqid and transcript name are `c;1=a,b&%x#y`), GFF3 only.
 ///

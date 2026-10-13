@@ -1117,9 +1117,22 @@ impl GenePred {
         let seqid = gxf_seqid(&self.chrom, escape_values);
         let coding_exons =
             derive_gxf_coding_exons(&exons, self.thick_start, self.thick_end, strand);
-        let cds_segments = compute_gxf_cds_segments(&coding_exons, strand);
-        let start_codon = gxf_start_codon_interval(&coding_exons, strand);
-        let stop_codon = gxf_stop_codon_interval(&coding_exons, strand);
+        // The release options (`utr_rows` and/or `gtf22`) need a complete codon.
+        // A transcript with no coding base inside its exons (thick interval empty
+        // or wholly intronic) or with fewer than CODON_BASES of them is therefore
+        // written as non-coding: gene / transcript / exon rows only, no CDS,
+        // codon or UTR rows. `GxfOptions::default()` sets neither option and
+        // reproduces 0.0.16 byte for byte, so it never takes that path.
+        let coding_length: u64 = coding_exons
+            .iter()
+            .map(|(start, end, _)| end.saturating_sub(*start))
+            .sum();
+        let coding = !(utr_rows || gtf22) || coding_length >= CODON_BASES;
+        let cds_segments = if coding {
+            compute_gxf_cds_segments(&coding_exons, strand)
+        } else {
+            Vec::new()
+        };
         // GTF 2.2 moves the stop codon out of the CDS rows into framed
         // `stop_codon` rows; GFF3 rows always keep 0.0.16's shape.
         let gtf22 = gtf22 && matches!(kind, GxfOutputKind::Gtf);
@@ -1132,15 +1145,20 @@ impl GenePred {
             Some((start, end, exon_number)) => vec![(start, end, None, exon_number)],
             None => Vec::new(),
         };
-        let (start_codon_rows, stop_codon_rows) = if gtf22 {
+        let (start_codon_rows, stop_codon_rows) = if !coding {
+            (Vec::new(), Vec::new())
+        } else if gtf22 {
             (
                 gxf22_codon_rows(&coding_exons, strand, true),
                 gxf22_codon_rows(&coding_exons, strand, false),
             )
         } else {
-            (legacy_codon(start_codon), legacy_codon(stop_codon))
+            (
+                legacy_codon(gxf_start_codon_interval(&coding_exons, strand)),
+                legacy_codon(gxf_stop_codon_interval(&coding_exons, strand)),
+            )
         };
-        let utr_rows = if utr_rows {
+        let utr_rows = if utr_rows && coding {
             gxf_utr_rows(&exons, self.thick_start, self.thick_end, strand, kind)
         } else {
             Vec::new()
@@ -1472,6 +1490,13 @@ pub enum TranscriptParent {
 ///
 /// [`Default`] reproduces 0.0.16 byte for byte: the source stays `genepred`, no
 /// UTR rows, no GTF 2.2 shaping and no escaping.
+///
+/// Under the release options (`utr_rows` and/or `gtf22` set) a transcript that
+/// has no coding base inside its exons — its thick interval is empty or falls
+/// wholly in an intron — or whose coding bases inside the exons total fewer than
+/// three, is written as non-coding: only its `gene` / transcript / `exon` rows,
+/// with no CDS, codon or UTR rows. A complete codon split across exon pieces
+/// stays supported. `Default` sets neither option and keeps 0.0.16's bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GxfOptions {
     /// Number of trailing numeric BED extras to append as attributes on every
@@ -1486,15 +1511,21 @@ pub struct GxfOptions {
     /// Whether to emit 5'/3' UTR rows: one row per exon piece outside
     /// `[thickStart, thickEnd)`, so never the stop codon, 5'/3' by strand,
     /// ascending, after the codon rows, with its exon's `exon_number`. No rows
-    /// without a CDS. `five_prime_utr` / `three_prime_utr` in GTF,
-    /// `five_prime_UTR` / `three_prime_UTR` in GFF3.
+    /// without a CDS: with `utr_rows` (or `gtf22`) set, a transcript with no
+    /// coding base inside its exons or fewer than three of them is written as
+    /// non-coding (see the [type-level](GxfOptions) rule) and gets no UTR row.
+    /// `five_prime_utr` / `three_prime_utr` in GTF, `five_prime_UTR` /
+    /// `three_prime_UTR` in GFF3.
     pub utr_rows: bool,
     /// Whether to follow GTF 2.2 (GTF only): CDS rows lose the last three
     /// coding bases in transcript order (the bases 0.0.16 emits as
     /// `stop_codon`), an emptied row is dropped, phases are unchanged, and the
     /// first / last three coding bases in transcript order are emitted as
     /// `start_codon` / `stop_codon` rows, one row per exon piece, framed by the
-    /// CDS phase rule. GFF3 rows keep 0.0.16's behaviour.
+    /// CDS phase rule. A codon shorter than three coding bases is never written
+    /// truncated: with `gtf22` (or `utr_rows`) set, a transcript with fewer than
+    /// three coding bases inside its exons is written as non-coding (see the
+    /// [type-level](GxfOptions) rule). GFF3 rows keep 0.0.16's behaviour.
     pub gtf22: bool,
     /// Whether to percent-encode names per the SO GFF3 spec (GFF only): in the
     /// seqid every byte outside `[a-zA-Z0-9.:^*$@!+_?-|]`, in column-9 values
