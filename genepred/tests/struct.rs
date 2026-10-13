@@ -1142,6 +1142,174 @@ fn test_gtf22_split_stop_codon_on_minus() {
     );
 }
 
+/// A split start codon under `gtf22`, on the reviewer's `startSplitP` (+) and
+/// `startSplitM` (-) records (review017/data/review_cases.bed, lines 7-8).
+///
+/// Derivation (0-based, half-open; CDS = exon n [thickStart, thickEnd)):
+///
+/// * startSplitP (+) chrStart 1000-1200, thick [1030,1181), exons (offsets
+///   30,80,150; sizes 2,30,31) [1030,1032) [1080,1110) [1150,1181), all coding,
+///   63 coding bases. Transcript order is ascending genomic, so the start codon
+///   is coding [0,3): 2 bases sit in [1030,1032) and the third in [1080,1110).
+///   REVM1b's MUST-FIX took (high - low) bases from every piece and emitted
+///   [1031,1032] and [1081,1083] - 5 bases (GTF is 1-based inclusive). Each
+///   piece now takes only the window bases it holds: 2 then 1, i.e. [1031,1032]
+///   (frame 0) and [1081,1081] (frame 1: 2 coding bases precede it).
+/// * startSplitM (-) chrStart 1000-1200, thick [1019,1170), exons (offsets
+///   19,90,168; sizes 31,30,2) [1019,1050) [1090,1120) [1168,1170), all coding,
+///   63 coding bases. Transcript order is descending genomic, so [1168,1170)
+///   is the first coding piece with 2 of the 3 codon bases and the third is the
+///   top base of [1090,1120). The buggy rows were [1118,1120] and [1169,1170];
+///   the fixed ones are [1120,1120] (frame 1) and [1169,1170] (frame 0), one
+///   base and two bases for a 3-base codon.
+///
+/// The stop codon is contiguous on both records (the last 3 coding bases fall
+/// in one piece), so it stays a single frame-0 row, and `gtf22` trims it out of
+/// the CDS rows: [1150,1178) on +, [1022,1050) on -.
+#[test]
+fn test_gtf22_split_start_codon_on_both_strands() {
+    let opts = GxfOptions {
+        gtf22: true,
+        ..Default::default()
+    };
+
+    // review_cases.bed line 7: chrStart 1000 1200 startSplitP 0 + 1030 1181
+    // 0,0,0 3 2,30,31 30,80,150
+    let split_p = bed12_record(
+        b"chrStart",
+        1000,
+        1200,
+        b"startSplitP",
+        Strand::Forward,
+        1030,
+        1181,
+        &[2, 30, 31],
+        &[30, 80, 150],
+    );
+    assert_eq!(
+        as_text(split_p.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chrStart\tgenepred\tgene\t1001\t1200\t.\t+\t.\tgene_id \"startSplitP\";",
+            "chrStart\tgenepred\ttranscript\t1001\t1200\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\";",
+            "chrStart\tgenepred\texon\t1031\t1032\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"1\";",
+            "chrStart\tgenepred\texon\t1081\t1110\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"2\";",
+            "chrStart\tgenepred\texon\t1151\t1181\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"3\";",
+            "chrStart\tgenepred\tCDS\t1031\t1032\t.\t+\t0\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"1\";",
+            "chrStart\tgenepred\tCDS\t1081\t1110\t.\t+\t1\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"2\";",
+            "chrStart\tgenepred\tCDS\t1151\t1178\t.\t+\t1\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"3\";",
+            "chrStart\tgenepred\tstart_codon\t1031\t1032\t.\t+\t0\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"1\";",
+            "chrStart\tgenepred\tstart_codon\t1081\t1081\t.\t+\t1\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"2\";",
+            "chrStart\tgenepred\tstop_codon\t1179\t1181\t.\t+\t0\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"3\";",
+        ]
+    );
+
+    // line 8: chrStart 1000 1200 startSplitM 0 - 1019 1170 0,0,0 3 31,30,2 19,90,168
+    let split_m = bed12_record(
+        b"chrStart",
+        1000,
+        1200,
+        b"startSplitM",
+        Strand::Reverse,
+        1019,
+        1170,
+        &[31, 30, 2],
+        &[19, 90, 168],
+    );
+    assert_eq!(
+        as_text(split_m.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chrStart\tgenepred\tgene\t1001\t1200\t.\t-\t.\tgene_id \"startSplitM\";",
+            "chrStart\tgenepred\ttranscript\t1001\t1200\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\";",
+            "chrStart\tgenepred\texon\t1020\t1050\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"3\";",
+            "chrStart\tgenepred\texon\t1091\t1120\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"2\";",
+            "chrStart\tgenepred\texon\t1169\t1170\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"1\";",
+            "chrStart\tgenepred\tCDS\t1023\t1050\t.\t-\t1\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"3\";",
+            "chrStart\tgenepred\tCDS\t1091\t1120\t.\t-\t1\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"2\";",
+            "chrStart\tgenepred\tCDS\t1169\t1170\t.\t-\t0\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"1\";",
+            "chrStart\tgenepred\tstart_codon\t1120\t1120\t.\t-\t1\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"2\";",
+            "chrStart\tgenepred\tstart_codon\t1169\t1170\t.\t-\t0\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"1\";",
+            "chrStart\tgenepred\tstop_codon\t1020\t1022\t.\t-\t0\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"3\";",
+        ]
+    );
+}
+
+/// A 1+2 split start codon under `gtf22`, the mirror image of the reviewer's
+/// 2+1 case: the first coding piece holds one codon base, the next holds two.
+///
+/// Derivation (0-based, half-open), a mirrored pair on chr1S 1000-1200 under the
+/// map x -> 2200 - x, so every row of one record is the mirror of the other's:
+///
+/// * startSplit1P (+) thick [1031,1100), exons [1031,1032) (1 bp) and
+///   [1080,1100) (20 bp), 21 coding bases. Start codon = coding [0,3): 1 base in
+///   [1031,1032), 2 in [1080,1100), so [1032,1032] frame 0 and [1081,1082]
+///   frame 2 (1 coding base precedes it). Stop codon = coding [18,21), all in
+///   [1080,1100): [1098,1100] frame 0, trimmed from its CDS row to [1081,1097].
+/// * startSplit1M (-) thick [1100,1169), exons [1100,1120) (20 bp) and
+///   [1168,1169) (1 bp), 21 coding bases. Transcript order is descending
+///   genomic: [1168,1169) holds the first codon base and [1100,1120) the other
+///   two, so [1169,1169] frame 0 and [1119,1120] frame 2. Stop codon
+///   [1100,1103) -> [1101,1103] frame 0; the CDS keeps [1103,1120) (trimmed at
+///   its transcript-3', low, end) and [1168,1169).
+#[test]
+fn test_gtf22_one_plus_two_split_start_codon() {
+    let opts = GxfOptions {
+        gtf22: true,
+        ..Default::default()
+    };
+
+    let split_p = bed12_record(
+        b"chr1S",
+        1000,
+        1200,
+        b"startSplit1P",
+        Strand::Forward,
+        1031,
+        1100,
+        &[1, 20],
+        &[31, 80],
+    );
+    assert_eq!(
+        as_text(split_p.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chr1S\tgenepred\tgene\t1001\t1200\t.\t+\t.\tgene_id \"startSplit1P\";",
+            "chr1S\tgenepred\ttranscript\t1001\t1200\t.\t+\t.\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\";",
+            "chr1S\tgenepred\texon\t1032\t1032\t.\t+\t.\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"1\";",
+            "chr1S\tgenepred\texon\t1081\t1100\t.\t+\t.\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+            "chr1S\tgenepred\tCDS\t1032\t1032\t.\t+\t0\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"1\";",
+            "chr1S\tgenepred\tCDS\t1081\t1097\t.\t+\t2\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+            "chr1S\tgenepred\tstart_codon\t1032\t1032\t.\t+\t0\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"1\";",
+            "chr1S\tgenepred\tstart_codon\t1081\t1082\t.\t+\t2\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+            "chr1S\tgenepred\tstop_codon\t1098\t1100\t.\t+\t0\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+        ]
+    );
+
+    let split_m = bed12_record(
+        b"chr1S",
+        1000,
+        1200,
+        b"startSplit1M",
+        Strand::Reverse,
+        1100,
+        1169,
+        &[20, 1],
+        &[100, 168],
+    );
+    assert_eq!(
+        as_text(split_m.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chr1S\tgenepred\tgene\t1001\t1200\t.\t-\t.\tgene_id \"startSplit1M\";",
+            "chr1S\tgenepred\ttranscript\t1001\t1200\t.\t-\t.\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\";",
+            "chr1S\tgenepred\texon\t1101\t1120\t.\t-\t.\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+            "chr1S\tgenepred\texon\t1169\t1169\t.\t-\t.\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"1\";",
+            "chr1S\tgenepred\tCDS\t1104\t1120\t.\t-\t2\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+            "chr1S\tgenepred\tCDS\t1169\t1169\t.\t-\t0\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"1\";",
+            "chr1S\tgenepred\tstart_codon\t1119\t1120\t.\t-\t2\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+            "chr1S\tgenepred\tstart_codon\t1169\t1169\t.\t-\t0\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"1\";",
+            "chr1S\tgenepred\tstop_codon\t1101\t1103\t.\t-\t0\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+        ]
+    );
+}
+
 /// REVM1 MUST-FIX 1 and 2 on the review's own ± counterexamples
 /// (`review017/data/review_cases.bed`, lines 1-2 and 5-6), under the release
 /// options: a transcript with no coding base inside its exons, or with fewer

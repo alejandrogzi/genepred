@@ -2130,7 +2130,10 @@ fn gtf22_trim_order(len: usize, strand: Strand) -> Vec<usize> {
 /// GTF 2.2 codon rows: the first or last [`CODON_BASES`] coding bases of the CDS
 /// in transcript order, one row per coding exon piece they touch, each framed by
 /// the CDS phase rule (the coding bases already consumed), so a codon contained
-/// in a single piece is one row with frame 0.
+/// in a single piece is one row with frame 0. Each piece contributes only the
+/// codon bases it actually contains, so the rows of one codon always total
+/// exactly the codon's length: a 2+1 split start codon emits a 2-base row and a
+/// 1-base row, never 2 + 3.
 ///
 /// # Arguments
 ///
@@ -2170,7 +2173,10 @@ fn gxf22_codon_rows(
         }
 
         let offset = low.saturating_sub(consumed);
-        let take = (high - low).min(len - offset);
+        // The piece holds the window bases it intersects: [consumed + offset,
+        // min(high, consumed + len)). Taking (high - low) here would hand the
+        // full codon to every piece (5 bases for a 2+1 split).
+        let take = (high - (consumed + offset)).min(len - offset);
         let row = if matches!(strand, Strand::Reverse) {
             (end - offset - take, end - offset)
         } else {
