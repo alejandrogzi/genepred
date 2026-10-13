@@ -2,6 +2,20 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.0.17] - 2026-10-13
+
+### Added
+
+- Four `GxfOptions` fields: `source` (column 2; `None` writes `genepred`),
+  `utr_rows` (5'/3' UTR rows), `gtf22` (GTF only: CDS rows without the stop
+  codon, plus framed `start_codon`/`stop_codon` rows) and `gff_escape`
+  (GFF only: SO percent-encoding of the seqid and column-9 values). The struct
+  keeps `Clone, Copy, Debug, Default, PartialEq, Eq` and its existing users
+  build it with `..Default::default()`.
+- Genepred 0.0.16 byte-identity golden files (`tests/data/golden_0_0_16.gtf`
+  and `.gff`) plus a test that rebuilds them, so `GxfOptions::default()` is
+  proved to reproduce the published crate's output byte for byte.
+
 ## [0.0.16] - 2026-06-24
 
 ### Added

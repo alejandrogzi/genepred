@@ -1009,8 +1009,7 @@ impl GenePred {
         self.to_gxf_with_options::<K>(
             &GxfOptions {
                 additional_fields,
-                gene_line: GeneLine::Include,
-                transcript_parent: TranscriptParent::Include,
+                ..GxfOptions::default()
             },
             transcript_gene_map,
         )
@@ -1047,10 +1046,12 @@ impl GenePred {
             None,
             &extra_attrs,
             true,
+            false,
         );
         let strand = self.strand.unwrap_or(Strand::Unknown);
         build_gxf_line(
             &self.chrom,
+            b"genepred",
             b"gene",
             self.start.saturating_add(1),
             self.end,
@@ -1084,6 +1085,10 @@ impl GenePred {
             additional_fields,
             gene_line,
             transcript_parent,
+            source,
+            utr_rows,
+            gtf22,
+            gff_escape,
         } = *options;
         let kind = gxf_output_kind::<K>();
         let include_gene = matches!(gene_line, GeneLine::Include);
@@ -1091,6 +1096,10 @@ impl GenePred {
         let transcript_id = resolve_gxf_transcript_id(self);
         let gene_id = resolve_gxf_gene_line_id::<K>(self, &transcript_id, transcript_gene_map);
         let extra_attrs = collect_gxf_additional_attributes(&self.extras, additional_fields);
+        // GFF3 percent-encodes the seqid and every column-9 value; GTF has no
+        // escaping at all.
+        let escape_values = gff_escape && matches!(kind, GxfOutputKind::Gff);
+        let source = source.unwrap_or("genepred").as_bytes();
 
         let transcript_attrs = render_gxf_feature_attributes(
             kind,
@@ -1100,23 +1109,51 @@ impl GenePred {
             None,
             &extra_attrs,
             emit_transcript_parent,
+            escape_values,
         );
 
         let strand = self.strand.unwrap_or(Strand::Unknown);
         let exons = derive_bed_exons(self);
+        let seqid = gxf_seqid(&self.chrom, escape_values);
         let coding_exons =
             derive_gxf_coding_exons(&exons, self.thick_start, self.thick_end, strand);
         let cds_segments = compute_gxf_cds_segments(&coding_exons, strand);
         let start_codon = gxf_start_codon_interval(&coding_exons, strand);
         let stop_codon = gxf_stop_codon_interval(&coding_exons, strand);
+        // GTF 2.2 moves the stop codon out of the CDS rows into framed
+        // `stop_codon` rows; GFF3 rows always keep 0.0.16's shape.
+        let gtf22 = gtf22 && matches!(kind, GxfOutputKind::Gtf);
+        let gtf22_cds_rows = gtf22.then(|| gtf22_cds_segments(&cds_segments, strand));
+        let cds_rows: &[(u64, u64, u8, usize)] = gtf22_cds_rows.as_deref().unwrap_or(&cds_segments);
+        // 0.0.16: one `start_codon` and one `stop_codon` row, truncated to a
+        // single exon piece and without a frame. GTF 2.2: one framed row per
+        // piece the codon spans, in ascending genomic order.
+        let legacy_codon = |codon: Option<(u64, u64, usize)>| match codon {
+            Some((start, end, exon_number)) => vec![(start, end, None, exon_number)],
+            None => Vec::new(),
+        };
+        let (start_codon_rows, stop_codon_rows) = if gtf22 {
+            (
+                gxf22_codon_rows(&coding_exons, strand, true),
+                gxf22_codon_rows(&coding_exons, strand, false),
+            )
+        } else {
+            (legacy_codon(start_codon), legacy_codon(stop_codon))
+        };
+        let utr_rows = if utr_rows {
+            gxf_utr_rows(&exons, self.thick_start, self.thick_end, strand, kind)
+        } else {
+            Vec::new()
+        };
 
         let mut lines = Vec::with_capacity(
             usize::from(include_gene)
                 + 1
                 + exons.len()
-                + cds_segments.len()
-                + usize::from(start_codon.is_some())
-                + usize::from(stop_codon.is_some()),
+                + cds_rows.len()
+                + start_codon_rows.len()
+                + stop_codon_rows.len()
+                + utr_rows.len(),
         );
 
         if include_gene {
@@ -1128,9 +1165,11 @@ impl GenePred {
                 None,
                 &extra_attrs,
                 emit_transcript_parent,
+                escape_values,
             );
             lines.push(build_gxf_line(
-                &self.chrom,
+                &seqid,
+                source,
                 b"gene",
                 self.start.saturating_add(1),
                 self.end,
@@ -1140,7 +1179,8 @@ impl GenePred {
             ));
         }
         lines.push(build_gxf_line(
-            &self.chrom,
+            &seqid,
+            source,
             match kind {
                 GxfOutputKind::Gtf => b"transcript",
                 GxfOutputKind::Gff => b"mRNA",
@@ -1162,9 +1202,11 @@ impl GenePred {
                 Some(exon_number),
                 &extra_attrs,
                 emit_transcript_parent,
+                escape_values,
             );
             lines.push(build_gxf_line(
-                &self.chrom,
+                &seqid,
+                source,
                 b"exon",
                 start.saturating_add(1),
                 end,
@@ -1174,7 +1216,7 @@ impl GenePred {
             ));
         }
 
-        for (start, end, phase, exon_number) in cds_segments {
+        for (start, end, phase, exon_number) in cds_rows.iter().copied() {
             let cds_attrs = render_gxf_feature_attributes(
                 kind,
                 GxfFeatureClass::Child,
@@ -1183,9 +1225,11 @@ impl GenePred {
                 Some(exon_number),
                 &extra_attrs,
                 emit_transcript_parent,
+                escape_values,
             );
             lines.push(build_gxf_line(
-                &self.chrom,
+                &seqid,
+                source,
                 b"CDS",
                 start.saturating_add(1),
                 end,
@@ -1195,29 +1239,36 @@ impl GenePred {
             ));
         }
 
-        if let Some((start, end, exon_number)) = start_codon {
-            let start_codon_attrs = render_gxf_feature_attributes(
-                kind,
-                GxfFeatureClass::Child,
-                &gene_id,
-                &transcript_id,
-                Some(exon_number),
-                &extra_attrs,
-                emit_transcript_parent,
-            );
-            lines.push(build_gxf_line(
-                &self.chrom,
-                b"start_codon",
-                start.saturating_add(1),
-                end,
-                strand,
-                None,
-                &start_codon_attrs,
-            ));
+        for (feature, codon_rows) in [
+            (b"start_codon".as_slice(), &start_codon_rows),
+            (b"stop_codon".as_slice(), &stop_codon_rows),
+        ] {
+            for &(start, end, frame, exon_number) in codon_rows.iter() {
+                let codon_attrs = render_gxf_feature_attributes(
+                    kind,
+                    GxfFeatureClass::Child,
+                    &gene_id,
+                    &transcript_id,
+                    Some(exon_number),
+                    &extra_attrs,
+                    emit_transcript_parent,
+                    escape_values,
+                );
+                lines.push(build_gxf_line(
+                    &seqid,
+                    source,
+                    feature,
+                    start.saturating_add(1),
+                    end,
+                    strand,
+                    frame,
+                    &codon_attrs,
+                ));
+            }
         }
 
-        if let Some((start, end, exon_number)) = stop_codon {
-            let stop_codon_attrs = render_gxf_feature_attributes(
+        for (start, end, exon_number, feature) in utr_rows {
+            let utr_attrs = render_gxf_feature_attributes(
                 kind,
                 GxfFeatureClass::Child,
                 &gene_id,
@@ -1225,15 +1276,17 @@ impl GenePred {
                 Some(exon_number),
                 &extra_attrs,
                 emit_transcript_parent,
+                escape_values,
             );
             lines.push(build_gxf_line(
-                &self.chrom,
-                b"stop_codon",
+                &seqid,
+                source,
+                feature,
                 start.saturating_add(1),
                 end,
                 strand,
                 None,
-                &stop_codon_attrs,
+                &utr_attrs,
             ));
         }
 
@@ -1407,7 +1460,18 @@ pub enum TranscriptParent {
 ///     transcript_parent: TranscriptParent::Omit,
 ///     ..Default::default()
 /// };
+/// // The `aprime` release's writer:
+/// let opts = GxfOptions {
+///     source: Some("aprime"),
+///     utr_rows: true,
+///     gtf22: true,
+///     gff_escape: true,
+///     ..Default::default()
+/// };
 /// ```
+///
+/// [`Default`] reproduces 0.0.16 byte for byte: the source stays `genepred`, no
+/// UTR rows, no GTF 2.2 shaping and no escaping.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GxfOptions {
     /// Number of trailing numeric BED extras to append as attributes on every
@@ -1417,6 +1481,27 @@ pub struct GxfOptions {
     pub gene_line: GeneLine,
     /// Whether the transcript row references a parent gene.
     pub transcript_parent: TranscriptParent,
+    /// Column 2 (source). `None` writes `genepred`.
+    pub source: Option<&'static str>,
+    /// Whether to emit 5'/3' UTR rows: one row per exon piece outside
+    /// `[thickStart, thickEnd)`, so never the stop codon, 5'/3' by strand,
+    /// ascending, after the codon rows, with its exon's `exon_number`. No rows
+    /// without a CDS. `five_prime_utr` / `three_prime_utr` in GTF,
+    /// `five_prime_UTR` / `three_prime_UTR` in GFF3.
+    pub utr_rows: bool,
+    /// Whether to follow GTF 2.2 (GTF only): CDS rows lose the last three
+    /// coding bases in transcript order (the bases 0.0.16 emits as
+    /// `stop_codon`), an emptied row is dropped, phases are unchanged, and the
+    /// first / last three coding bases in transcript order are emitted as
+    /// `start_codon` / `stop_codon` rows, one row per exon piece, framed by the
+    /// CDS phase rule. GFF3 rows keep 0.0.16's behaviour.
+    pub gtf22: bool,
+    /// Whether to percent-encode names per the SO GFF3 spec (GFF only): in the
+    /// seqid every byte outside `[a-zA-Z0-9.:^*$@!+_?-|]`, in column-9 values
+    /// `%`, `;`, `=`, `&`, `,`, tab, CR, LF and the other control bytes
+    /// (0x00-0x1F, 0x7F), as `%XX` with upper-case hex. GTF writes names
+    /// verbatim.
+    pub gff_escape: bool,
 }
 
 /// Output format for GXF conversion.
@@ -1614,6 +1699,9 @@ fn collect_gxf_additional_attributes(
 ///   transcript is top-level and carries no `Parent`, otherwise it would
 ///   reference a gene that does not exist (or, when the gene id was synthesized
 ///   from the transcript id, point back at itself). Ignored for all other rows.
+/// * `escape_values` - Whether to percent-encode the column-9 values per the SO
+///   GFF3 spec (`GxfOptions::gff_escape`, GFF output only).
+#[allow(clippy::too_many_arguments)]
 fn render_gxf_feature_attributes(
     kind: GxfOutputKind,
     class: GxfFeatureClass,
@@ -1622,6 +1710,7 @@ fn render_gxf_feature_attributes(
     exon_number: Option<usize>,
     additional_attrs: &[(Vec<u8>, Vec<u8>)],
     emit_transcript_parent: bool,
+    escape_values: bool,
 ) -> Vec<u8> {
     let mut attrs = Vec::with_capacity(additional_attrs.len() + 3);
 
@@ -1652,6 +1741,12 @@ fn render_gxf_feature_attributes(
     }
 
     attrs.extend(additional_attrs.iter().cloned());
+
+    if escape_values {
+        for (_, value) in &mut attrs {
+            *value = gff_escape_value(value);
+        }
+    }
 
     match kind {
         GxfOutputKind::Gtf => render_gtf_attributes(&attrs),
@@ -1705,6 +1800,74 @@ fn render_gff_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
     out
 }
 
+/// Upper-case hex digits for SO percent-encoding.
+const PERCENT_HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+/// Appends one byte as `%XX` with upper-case hex.
+///
+/// # Arguments
+///
+/// * `out` - Buffer to append to.
+/// * `byte` - Byte to escape.
+fn append_percent_escaped(out: &mut Vec<u8>, byte: u8) {
+    out.push(b'%');
+    out.push(PERCENT_HEX[(byte >> 4) as usize]);
+    out.push(PERCENT_HEX[(byte & 0x0F) as usize]);
+}
+
+/// Escapes a GFF3 seqid per the SO GFF3 spec.
+///
+/// Every byte outside `[a-zA-Z0-9.:^*$@!+_?-|]` is percent-encoded; a name that
+/// already passes is returned unchanged. GTF has no escaping, so this is only
+/// ever asked for on GFF output.
+///
+/// # Arguments
+///
+/// * `seqid` - Sequence identifier to escape.
+/// * `escape` - Whether to escape at all.
+fn gxf_seqid(seqid: &[u8], escape: bool) -> Vec<u8> {
+    if !escape {
+        return seqid.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(seqid.len());
+    for &byte in seqid {
+        if byte.is_ascii_alphanumeric()
+            || matches!(
+                byte,
+                b'.' | b':' | b'^' | b'*' | b'$' | b'@' | b'!' | b'+' | b'_' | b'?' | b'-' | b'|'
+            )
+        {
+            out.push(byte);
+        } else {
+            append_percent_escaped(&mut out, byte);
+        }
+    }
+    out
+}
+
+/// Escapes a GFF3 column-9 value per the SO GFF3 spec.
+///
+/// `%`, `;`, `=`, `&`, `,`, tab, CR, LF and the other control bytes
+/// (0x00-0x1F, 0x7F) are percent-encoded; every other byte, `#` included, is
+/// legal inside a column-9 value (only a `#` starting a line is a comment).
+///
+/// # Arguments
+///
+/// * `value` - Attribute value to escape.
+fn gff_escape_value(value: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(value.len());
+    for &byte in value {
+        if byte == b'%' || byte <= 0x1F || byte == 0x7F || matches!(byte, b';' | b'=' | b'&' | b',')
+        {
+            append_percent_escaped(&mut out, byte);
+        } else {
+            out.push(byte);
+        }
+    }
+    out
+}
+
 /// Builds a GXF line.
 ///
 /// Constructs a complete GXF record line with all columns.
@@ -1718,8 +1881,10 @@ fn render_gff_attributes(attributes: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
 /// * `strand` - Strand orientation.
 /// * `phase` - Reading frame (0, 1, 2).
 /// * `attributes` - Formatted attributes.
+#[allow(clippy::too_many_arguments)]
 fn build_gxf_line(
     chrom: &[u8],
+    source: &[u8],
     feature: &[u8],
     start_1based: u64,
     end_1based: u64,
@@ -1727,10 +1892,11 @@ fn build_gxf_line(
     phase: Option<u8>,
     attributes: &[u8],
 ) -> Vec<u8> {
-    let mut line = Vec::with_capacity(chrom.len() + feature.len() + attributes.len() + 40);
+    let mut line =
+        Vec::with_capacity(chrom.len() + source.len() + feature.len() + attributes.len() + 40);
     line.extend_from_slice(chrom);
     line.push(b'\t');
-    line.extend_from_slice(b"genepred");
+    line.extend_from_slice(source);
     line.push(b'\t');
     line.extend_from_slice(feature);
     line.push(b'\t');
@@ -1869,6 +2035,179 @@ fn gxf_stop_codon_interval(
             (*start < codon_end).then_some((*start, codon_end, *exon_number))
         }),
     }
+}
+
+/// Number of coding bases a codon spans.
+const CODON_BASES: u64 = 3;
+
+/// GTF 2.2 CDS rows: the CDS segments without the last [`CODON_BASES`] coding
+/// bases in transcript order, which are the bases 0.0.16 emits as the
+/// `stop_codon` row. A row emptied by the trim is dropped; phases and exon
+/// numbers are those of the untrimmed CDS.
+///
+/// # Arguments
+///
+/// * `segments` - CDS segments in ascending genomic order.
+/// * `strand` - Strand orientation.
+fn gtf22_cds_segments(
+    segments: &[(u64, u64, u8, usize)],
+    strand: Strand,
+) -> Vec<(u64, u64, u8, usize)> {
+    // The transcript 3' end of the CDS is the highest genomic segment on the
+    // forward strand and the lowest on the reverse one: walk from there.
+    let mut remaining = CODON_BASES;
+    let mut trims = vec![0u64; segments.len()];
+    for &index in &gtf22_trim_order(segments.len(), strand) {
+        let len = segments[index].1.saturating_sub(segments[index].0);
+        let trimmed = remaining.min(len);
+        trims[index] = trimmed;
+        remaining -= trimmed;
+    }
+
+    let mut rows = Vec::with_capacity(segments.len());
+    for (&(start, end, phase, exon_number), &trimmed) in segments.iter().zip(&trims) {
+        let len = end.saturating_sub(start);
+        if len <= trimmed {
+            continue;
+        }
+        let row = if matches!(strand, Strand::Reverse) {
+            (start + trimmed, end)
+        } else {
+            (start, end - trimmed)
+        };
+        rows.push((row.0, row.1, phase, exon_number));
+    }
+    rows
+}
+
+/// Returns segment indices ordered from the transcript 3' end of the CDS to its
+/// 5' end.
+///
+/// # Arguments
+///
+/// * `len` - Number of CDS segments, in ascending genomic order.
+/// * `strand` - Strand orientation.
+fn gtf22_trim_order(len: usize, strand: Strand) -> Vec<usize> {
+    let order: Vec<usize> = (0..len).collect();
+    if matches!(strand, Strand::Reverse) {
+        order
+    } else {
+        order.into_iter().rev().collect()
+    }
+}
+
+/// GTF 2.2 codon rows: the first or last [`CODON_BASES`] coding bases of the CDS
+/// in transcript order, one row per coding exon piece they touch, each framed by
+/// the CDS phase rule (the coding bases already consumed), so a codon contained
+/// in a single piece is one row with frame 0.
+///
+/// # Arguments
+///
+/// * `coding_exons` - Coding exon pieces in ascending genomic order.
+/// * `strand` - Strand orientation.
+/// * `first` - `true` for the start codon, `false` for the stop codon.
+fn gxf22_codon_rows(
+    coding_exons: &[(u64, u64, usize)],
+    strand: Strand,
+    first: bool,
+) -> Vec<(u64, u64, Option<u8>, usize)> {
+    let mut ordered = coding_exons.to_vec();
+    if matches!(strand, Strand::Reverse) {
+        ordered.reverse();
+    }
+
+    let total: u64 = ordered
+        .iter()
+        .map(|(start, end, _)| end.saturating_sub(*start))
+        .sum();
+    let (low, high) = if first {
+        (0, total.min(CODON_BASES))
+    } else {
+        (total.saturating_sub(CODON_BASES), total)
+    };
+
+    let mut rows = Vec::new();
+    let mut consumed = 0u64;
+    for (start, end, exon_number) in ordered {
+        let len = end.saturating_sub(start);
+        if consumed + len <= low {
+            consumed += len;
+            continue;
+        }
+        if consumed >= high {
+            break;
+        }
+
+        let offset = low.saturating_sub(consumed);
+        let take = (high - low).min(len - offset);
+        let row = if matches!(strand, Strand::Reverse) {
+            (end - offset - take, end - offset)
+        } else {
+            (start + offset, start + offset + take)
+        };
+        rows.push((
+            row.0,
+            row.1,
+            Some(((3 - ((consumed + offset) % 3)) % 3) as u8),
+            exon_number,
+        ));
+        consumed += len;
+    }
+    // `rows` is in transcript order; every other row of a GXF record is emitted
+    // in ascending genomic order, so flip the reverse strand's.
+    if matches!(strand, Strand::Reverse) {
+        rows.reverse();
+    }
+    rows
+}
+
+/// UTR rows for [`GxfOptions::utr_rows`]: one row per exon piece outside
+/// `[thickStart, thickEnd)` — so never the stop codon — 5'/3' by strand, in
+/// ascending genomic order, each carrying its exon's `exon_number`. No rows
+/// without a CDS.
+///
+/// # Arguments
+///
+/// * `exons` - Exon intervals in ascending genomic order.
+/// * `thick_start` - Start of the coding region.
+/// * `thick_end` - End of the coding region.
+/// * `strand` - Strand orientation.
+/// * `kind` - Output format, which picks the feature names.
+fn gxf_utr_rows(
+    exons: &[(u64, u64)],
+    thick_start: Option<u64>,
+    thick_end: Option<u64>,
+    strand: Strand,
+    kind: GxfOutputKind,
+) -> Vec<(u64, u64, usize, &'static [u8])> {
+    let (Some(thick_start), Some(thick_end)) = (thick_start, thick_end) else {
+        return Vec::new();
+    };
+    if thick_start >= thick_end {
+        return Vec::new();
+    }
+
+    let feature = |five_prime: bool| -> &'static [u8] {
+        match (kind, five_prime) {
+            (GxfOutputKind::Gtf, true) => b"five_prime_utr",
+            (GxfOutputKind::Gtf, false) => b"three_prime_utr",
+            (GxfOutputKind::Gff, true) => b"five_prime_UTR",
+            (GxfOutputKind::Gff, false) => b"three_prime_UTR",
+        }
+    };
+    let reverse = matches!(strand, Strand::Reverse);
+
+    let mut rows = Vec::with_capacity(exons.len());
+    for (index, &(start, end)) in exons.iter().enumerate() {
+        let exon_number = transcript_exon_number(strand, index, exons.len());
+        if start < thick_start {
+            rows.push((start, end.min(thick_start), exon_number, feature(!reverse)));
+        }
+        if end > thick_end {
+            rows.push((start.max(thick_end), end, exon_number, feature(reverse)));
+        }
+    }
+    rows
 }
 
 /// Derives coding exons from exons and thick regions.
