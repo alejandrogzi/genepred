@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use genepred::bed::{Bed12, Bed3, Bed4, Bed5, Bed6, Bed8, Bed9};
 use genepred::{
-    ExtraValue, Extras, GeneLine, GenePred, Gff, Gtf, GxfOptions, Strand, TranscriptParent,
+    BedFormat, ExtraValue, Extras, GeneLine, GenePred, Gff, Gtf, GxfOptions, Reader, ReaderOptions,
+    Strand, TranscriptParent, Writer, WriterOptions,
 };
 
 #[test]
@@ -974,4 +975,765 @@ fn test_to_gxf_no_gene_mode_no_mapping_has_no_self_parent_gff() {
         "transcript must not be its own parent: {}",
         text[0]
     );
+}
+
+/// The release's writer options (release_design.md sec.3), replayed on the +/-
+/// mirrored pair of `tests/data/bed12_mirror.bed`. Expected rows are derived by
+/// hand below; every row of one record is the mirror of the other's.
+///
+/// Derivation (0-based, half-open; the records share the span [100, 380) and the
+/// mirror map is x -> 480 - x):
+///
+/// - txMirP (+) exons [100,130) [180,220) [320,380), thick [140,361) -> coding
+///   pieces [180,220) 40 bp (phase 0) and [320,361) 41 bp (phase 2), 81 bp.
+/// - txMirM (-) exons [100,160) [260,300) [350,380), thick [119,340) -> coding
+///   pieces [260,300) 40 bp (phase 0) and [119,160) 41 bp (phase 2), 81 bp.
+///   Transcript order is descending genomic, so [260,300) is its first coding
+///   piece and [119,160) its last.
+///
+/// `gtf22` (GTF): the CDS rows lose the last three coding bases in transcript
+/// order - [358,361) on +, [119,122) on - and 40 + 38 = 78 coding bases precede
+/// the stop codon on both strands, so 78 % 3 = 0 and each codon is one row with
+/// frame 0. UTR rows are the exon pieces outside the thick region, 5'/3' by
+/// strand and ascending: [100,130) and [361,380) on +; [100,119) (3') and
+/// [350,380) (5') on -.
+///
+/// GFF3 keeps 0.0.16's shape (`gtf22` is GTF-only): the CDS keeps the stop codon
+/// and the codon rows carry no frame. With no map the gene id is the synthesized
+/// `gene-<transcript id>` one.
+#[test]
+fn test_release_options_on_mirrored_pair() {
+    let records = read_bed12("tests/data/bed12_mirror.bed", 1);
+    assert_eq!(records.len(), 2, "mirrored pair: two records");
+    let release = GxfOptions {
+        source: Some("aprime"),
+        utr_rows: true,
+        gtf22: true,
+        gff_escape: true,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        as_text(records[0].to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrM1\taprime\tgene\t101\t380\t.\t+\t.\tgene_id \"txMirP\";",
+            "chrM1\taprime\ttranscript\t101\t380\t.\t+\t.\tgene_id \"txMirP\"; transcript_id \"txMirP\";",
+            "chrM1\taprime\texon\t101\t130\t.\t+\t.\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"1\";",
+            "chrM1\taprime\texon\t181\t220\t.\t+\t.\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"2\";",
+            "chrM1\taprime\texon\t321\t380\t.\t+\t.\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"3\";",
+            "chrM1\taprime\tCDS\t181\t220\t.\t+\t0\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"2\";",
+            "chrM1\taprime\tCDS\t321\t358\t.\t+\t2\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"3\";",
+            "chrM1\taprime\tstart_codon\t181\t183\t.\t+\t0\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"2\";",
+            "chrM1\taprime\tstop_codon\t359\t361\t.\t+\t0\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"3\";",
+            "chrM1\taprime\tfive_prime_utr\t101\t130\t.\t+\t.\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"1\";",
+            "chrM1\taprime\tthree_prime_utr\t362\t380\t.\t+\t.\tgene_id \"txMirP\"; transcript_id \"txMirP\"; exon_number \"3\";",
+        ]
+    );
+    assert_eq!(
+        as_text(records[1].to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrM1\taprime\tgene\t101\t380\t.\t-\t.\tgene_id \"txMirM\";",
+            "chrM1\taprime\ttranscript\t101\t380\t.\t-\t.\tgene_id \"txMirM\"; transcript_id \"txMirM\";",
+            "chrM1\taprime\texon\t101\t160\t.\t-\t.\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"3\";",
+            "chrM1\taprime\texon\t261\t300\t.\t-\t.\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"2\";",
+            "chrM1\taprime\texon\t351\t380\t.\t-\t.\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"1\";",
+            "chrM1\taprime\tCDS\t123\t160\t.\t-\t2\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"3\";",
+            "chrM1\taprime\tCDS\t261\t300\t.\t-\t0\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"2\";",
+            "chrM1\taprime\tstart_codon\t298\t300\t.\t-\t0\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"2\";",
+            "chrM1\taprime\tstop_codon\t120\t122\t.\t-\t0\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"3\";",
+            "chrM1\taprime\tthree_prime_utr\t101\t119\t.\t-\t.\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"3\";",
+            "chrM1\taprime\tfive_prime_utr\t351\t380\t.\t-\t.\tgene_id \"txMirM\"; transcript_id \"txMirM\"; exon_number \"1\";",
+        ]
+    );
+
+    assert_eq!(
+        as_text(records[0].to_gxf_with_options::<Gff>(&release, None)),
+        vec![
+            "chrM1\taprime\tgene\t101\t380\t.\t+\t.\tID=gene-txMirP;",
+            "chrM1\taprime\tmRNA\t101\t380\t.\t+\t.\tID=txMirP;Parent=gene-txMirP;",
+            "chrM1\taprime\texon\t101\t130\t.\t+\t.\tParent=txMirP;exon_number=1;",
+            "chrM1\taprime\texon\t181\t220\t.\t+\t.\tParent=txMirP;exon_number=2;",
+            "chrM1\taprime\texon\t321\t380\t.\t+\t.\tParent=txMirP;exon_number=3;",
+            "chrM1\taprime\tCDS\t181\t220\t.\t+\t0\tParent=txMirP;exon_number=2;",
+            "chrM1\taprime\tCDS\t321\t361\t.\t+\t2\tParent=txMirP;exon_number=3;",
+            "chrM1\taprime\tstart_codon\t181\t183\t.\t+\t.\tParent=txMirP;exon_number=2;",
+            "chrM1\taprime\tstop_codon\t359\t361\t.\t+\t.\tParent=txMirP;exon_number=3;",
+            "chrM1\taprime\tfive_prime_UTR\t101\t130\t.\t+\t.\tParent=txMirP;exon_number=1;",
+            "chrM1\taprime\tthree_prime_UTR\t362\t380\t.\t+\t.\tParent=txMirP;exon_number=3;",
+        ]
+    );
+    assert_eq!(
+        as_text(records[1].to_gxf_with_options::<Gff>(&release, None)),
+        vec![
+            "chrM1\taprime\tgene\t101\t380\t.\t-\t.\tID=gene-txMirM;",
+            "chrM1\taprime\tmRNA\t101\t380\t.\t-\t.\tID=txMirM;Parent=gene-txMirM;",
+            "chrM1\taprime\texon\t101\t160\t.\t-\t.\tParent=txMirM;exon_number=3;",
+            "chrM1\taprime\texon\t261\t300\t.\t-\t.\tParent=txMirM;exon_number=2;",
+            "chrM1\taprime\texon\t351\t380\t.\t-\t.\tParent=txMirM;exon_number=1;",
+            "chrM1\taprime\tCDS\t120\t160\t.\t-\t2\tParent=txMirM;exon_number=3;",
+            "chrM1\taprime\tCDS\t261\t300\t.\t-\t0\tParent=txMirM;exon_number=2;",
+            "chrM1\taprime\tstart_codon\t298\t300\t.\t-\t.\tParent=txMirM;exon_number=2;",
+            "chrM1\taprime\tstop_codon\t120\t122\t.\t-\t.\tParent=txMirM;exon_number=3;",
+            "chrM1\taprime\tthree_prime_UTR\t101\t119\t.\t-\t.\tParent=txMirM;exon_number=3;",
+            "chrM1\taprime\tfive_prime_UTR\t351\t380\t.\t-\t.\tParent=txMirM;exon_number=1;",
+        ]
+    );
+
+    // GTF codon frame 0 on both strands: the codon is contiguous, so one row.
+    for record in &records {
+        for line in as_text(record.to_gxf_with_options::<Gtf>(&release, None)) {
+            let columns: Vec<&str> = line.split('\t').collect();
+            if columns[2] == "start_codon" || columns[2] == "stop_codon" {
+                assert_eq!(columns[7], "0", "unframed codon row: {line}");
+            }
+        }
+    }
+}
+
+/// A split stop codon on the - strand (`tests/data/bed12_split_stop.bed`), under
+/// `gtf22`.
+///
+/// Derivation (0-based, half-open): exons [500,502) [570,598) [600,630), thick
+/// [500,630) -> coding pieces [600,630) 30 bp, [570,598) 28 bp, [500,502) 2 bp
+/// (60 bp, 20 codons). Transcript order is descending genomic, so the two last
+/// coding bases are [500,502) and the third is the bottom base of [570,598):
+/// 0.0.16 truncates the codon to that 2-base piece, while `gtf22` emits both
+/// [570,571) and [500,502) as two `stop_codon` rows and drops [500,502) from the
+/// CDS (it is emptied). Frames follow the phase rule: 57 coding bases precede
+/// the [570,571) row (frame 0) and 58 precede [500,502) (frame 2), so the codon
+/// spans frame 0 + frame 2.
+#[test]
+fn test_gtf22_split_stop_codon_on_minus() {
+    let records = read_bed12("tests/data/bed12_split_stop.bed", 0);
+    assert_eq!(records.len(), 1, "split stop codon: one record");
+    let opts = GxfOptions {
+        gtf22: true,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        as_text(records[0].to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chrS\tgenepred\tgene\t501\t700\t.\t-\t.\tgene_id \"txSplit\";",
+            "chrS\tgenepred\ttranscript\t501\t700\t.\t-\t.\tgene_id \"txSplit\"; transcript_id \"txSplit\";",
+            "chrS\tgenepred\texon\t501\t502\t.\t-\t.\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"3\";",
+            "chrS\tgenepred\texon\t571\t598\t.\t-\t.\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"2\";",
+            "chrS\tgenepred\texon\t601\t630\t.\t-\t.\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"1\";",
+            "chrS\tgenepred\tCDS\t572\t598\t.\t-\t0\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"2\";",
+            "chrS\tgenepred\tCDS\t601\t630\t.\t-\t0\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"1\";",
+            "chrS\tgenepred\tstart_codon\t628\t630\t.\t-\t0\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"1\";",
+            "chrS\tgenepred\tstop_codon\t501\t502\t.\t-\t2\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"3\";",
+            "chrS\tgenepred\tstop_codon\t571\t571\t.\t-\t0\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"2\";",
+        ]
+    );
+
+    // Without `gtf22` (i.e. 0.0.16) the codon is truncated to the 2-base piece
+    // and the CDS keeps all 60 coding bases.
+    let text = as_text(records[0].to_gxf_with_options::<Gtf>(&GxfOptions::default(), None));
+    assert!(text.contains(
+        &"chrS\tgenepred\tstop_codon\t501\t502\t.\t-\t.\tgene_id \"txSplit\"; transcript_id \"txSplit\"; exon_number \"3\";".to_string()
+    ));
+    assert_eq!(
+        text.iter()
+            .filter(|line| line.split('\t').nth(2) == Some("CDS"))
+            .count(),
+        3,
+        "0.0.16 keeps the emptied-by-gtf22 CDS piece"
+    );
+}
+
+/// A split start codon under `gtf22`, on the reviewer's `startSplitP` (+) and
+/// `startSplitM` (-) records (review017/data/review_cases.bed, lines 7-8).
+///
+/// Derivation (0-based, half-open; CDS = exon n [thickStart, thickEnd)):
+///
+/// * startSplitP (+) chrStart 1000-1200, thick [1030,1181), exons (offsets
+///   30,80,150; sizes 2,30,31) [1030,1032) [1080,1110) [1150,1181), all coding,
+///   63 coding bases. Transcript order is ascending genomic, so the start codon
+///   is coding [0,3): 2 bases sit in [1030,1032) and the third in [1080,1110).
+///   REVM1b's MUST-FIX took (high - low) bases from every piece and emitted
+///   [1031,1032] and [1081,1083] - 5 bases (GTF is 1-based inclusive). Each
+///   piece now takes only the window bases it holds: 2 then 1, i.e. [1031,1032]
+///   (frame 0) and [1081,1081] (frame 1: 2 coding bases precede it).
+/// * startSplitM (-) chrStart 1000-1200, thick [1019,1170), exons (offsets
+///   19,90,168; sizes 31,30,2) [1019,1050) [1090,1120) [1168,1170), all coding,
+///   63 coding bases. Transcript order is descending genomic, so [1168,1170)
+///   is the first coding piece with 2 of the 3 codon bases and the third is the
+///   top base of [1090,1120). The buggy rows were [1118,1120] and [1169,1170];
+///   the fixed ones are [1120,1120] (frame 1) and [1169,1170] (frame 0), one
+///   base and two bases for a 3-base codon.
+///
+/// The stop codon is contiguous on both records (the last 3 coding bases fall
+/// in one piece), so it stays a single frame-0 row, and `gtf22` trims it out of
+/// the CDS rows: [1150,1178) on +, [1022,1050) on -.
+#[test]
+fn test_gtf22_split_start_codon_on_both_strands() {
+    let opts = GxfOptions {
+        gtf22: true,
+        ..Default::default()
+    };
+
+    // review_cases.bed line 7: chrStart 1000 1200 startSplitP 0 + 1030 1181
+    // 0,0,0 3 2,30,31 30,80,150
+    let split_p = bed12_record(
+        b"chrStart",
+        1000,
+        1200,
+        b"startSplitP",
+        Strand::Forward,
+        1030,
+        1181,
+        &[2, 30, 31],
+        &[30, 80, 150],
+    );
+    assert_eq!(
+        as_text(split_p.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chrStart\tgenepred\tgene\t1001\t1200\t.\t+\t.\tgene_id \"startSplitP\";",
+            "chrStart\tgenepred\ttranscript\t1001\t1200\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\";",
+            "chrStart\tgenepred\texon\t1031\t1032\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"1\";",
+            "chrStart\tgenepred\texon\t1081\t1110\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"2\";",
+            "chrStart\tgenepred\texon\t1151\t1181\t.\t+\t.\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"3\";",
+            "chrStart\tgenepred\tCDS\t1031\t1032\t.\t+\t0\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"1\";",
+            "chrStart\tgenepred\tCDS\t1081\t1110\t.\t+\t1\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"2\";",
+            "chrStart\tgenepred\tCDS\t1151\t1178\t.\t+\t1\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"3\";",
+            "chrStart\tgenepred\tstart_codon\t1031\t1032\t.\t+\t0\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"1\";",
+            "chrStart\tgenepred\tstart_codon\t1081\t1081\t.\t+\t1\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"2\";",
+            "chrStart\tgenepred\tstop_codon\t1179\t1181\t.\t+\t0\tgene_id \"startSplitP\"; transcript_id \"startSplitP\"; exon_number \"3\";",
+        ]
+    );
+
+    // line 8: chrStart 1000 1200 startSplitM 0 - 1019 1170 0,0,0 3 31,30,2 19,90,168
+    let split_m = bed12_record(
+        b"chrStart",
+        1000,
+        1200,
+        b"startSplitM",
+        Strand::Reverse,
+        1019,
+        1170,
+        &[31, 30, 2],
+        &[19, 90, 168],
+    );
+    assert_eq!(
+        as_text(split_m.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chrStart\tgenepred\tgene\t1001\t1200\t.\t-\t.\tgene_id \"startSplitM\";",
+            "chrStart\tgenepred\ttranscript\t1001\t1200\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\";",
+            "chrStart\tgenepred\texon\t1020\t1050\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"3\";",
+            "chrStart\tgenepred\texon\t1091\t1120\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"2\";",
+            "chrStart\tgenepred\texon\t1169\t1170\t.\t-\t.\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"1\";",
+            "chrStart\tgenepred\tCDS\t1023\t1050\t.\t-\t1\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"3\";",
+            "chrStart\tgenepred\tCDS\t1091\t1120\t.\t-\t1\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"2\";",
+            "chrStart\tgenepred\tCDS\t1169\t1170\t.\t-\t0\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"1\";",
+            "chrStart\tgenepred\tstart_codon\t1120\t1120\t.\t-\t1\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"2\";",
+            "chrStart\tgenepred\tstart_codon\t1169\t1170\t.\t-\t0\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"1\";",
+            "chrStart\tgenepred\tstop_codon\t1020\t1022\t.\t-\t0\tgene_id \"startSplitM\"; transcript_id \"startSplitM\"; exon_number \"3\";",
+        ]
+    );
+}
+
+/// A 1+2 split start codon under `gtf22`, the mirror image of the reviewer's
+/// 2+1 case: the first coding piece holds one codon base, the next holds two.
+///
+/// Derivation (0-based, half-open), a mirrored pair on chr1S 1000-1200 under the
+/// map x -> 2200 - x, so every row of one record is the mirror of the other's:
+///
+/// * startSplit1P (+) thick [1031,1100), exons [1031,1032) (1 bp) and
+///   [1080,1100) (20 bp), 21 coding bases. Start codon = coding [0,3): 1 base in
+///   [1031,1032), 2 in [1080,1100), so [1032,1032] frame 0 and [1081,1082]
+///   frame 2 (1 coding base precedes it). Stop codon = coding [18,21), all in
+///   [1080,1100): [1098,1100] frame 0, trimmed from its CDS row to [1081,1097].
+/// * startSplit1M (-) thick [1100,1169), exons [1100,1120) (20 bp) and
+///   [1168,1169) (1 bp), 21 coding bases. Transcript order is descending
+///   genomic: [1168,1169) holds the first codon base and [1100,1120) the other
+///   two, so [1169,1169] frame 0 and [1119,1120] frame 2. Stop codon
+///   [1100,1103) -> [1101,1103] frame 0; the CDS keeps [1103,1120) (trimmed at
+///   its transcript-3', low, end) and [1168,1169).
+#[test]
+fn test_gtf22_one_plus_two_split_start_codon() {
+    let opts = GxfOptions {
+        gtf22: true,
+        ..Default::default()
+    };
+
+    let split_p = bed12_record(
+        b"chr1S",
+        1000,
+        1200,
+        b"startSplit1P",
+        Strand::Forward,
+        1031,
+        1100,
+        &[1, 20],
+        &[31, 80],
+    );
+    assert_eq!(
+        as_text(split_p.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chr1S\tgenepred\tgene\t1001\t1200\t.\t+\t.\tgene_id \"startSplit1P\";",
+            "chr1S\tgenepred\ttranscript\t1001\t1200\t.\t+\t.\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\";",
+            "chr1S\tgenepred\texon\t1032\t1032\t.\t+\t.\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"1\";",
+            "chr1S\tgenepred\texon\t1081\t1100\t.\t+\t.\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+            "chr1S\tgenepred\tCDS\t1032\t1032\t.\t+\t0\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"1\";",
+            "chr1S\tgenepred\tCDS\t1081\t1097\t.\t+\t2\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+            "chr1S\tgenepred\tstart_codon\t1032\t1032\t.\t+\t0\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"1\";",
+            "chr1S\tgenepred\tstart_codon\t1081\t1082\t.\t+\t2\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+            "chr1S\tgenepred\tstop_codon\t1098\t1100\t.\t+\t0\tgene_id \"startSplit1P\"; transcript_id \"startSplit1P\"; exon_number \"2\";",
+        ]
+    );
+
+    let split_m = bed12_record(
+        b"chr1S",
+        1000,
+        1200,
+        b"startSplit1M",
+        Strand::Reverse,
+        1100,
+        1169,
+        &[20, 1],
+        &[100, 168],
+    );
+    assert_eq!(
+        as_text(split_m.to_gxf_with_options::<Gtf>(&opts, None)),
+        vec![
+            "chr1S\tgenepred\tgene\t1001\t1200\t.\t-\t.\tgene_id \"startSplit1M\";",
+            "chr1S\tgenepred\ttranscript\t1001\t1200\t.\t-\t.\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\";",
+            "chr1S\tgenepred\texon\t1101\t1120\t.\t-\t.\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+            "chr1S\tgenepred\texon\t1169\t1169\t.\t-\t.\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"1\";",
+            "chr1S\tgenepred\tCDS\t1104\t1120\t.\t-\t2\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+            "chr1S\tgenepred\tCDS\t1169\t1169\t.\t-\t0\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"1\";",
+            "chr1S\tgenepred\tstart_codon\t1119\t1120\t.\t-\t2\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+            "chr1S\tgenepred\tstart_codon\t1169\t1169\t.\t-\t0\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"1\";",
+            "chr1S\tgenepred\tstop_codon\t1101\t1103\t.\t-\t0\tgene_id \"startSplit1M\"; transcript_id \"startSplit1M\"; exon_number \"2\";",
+        ]
+    );
+}
+
+/// REVM1 MUST-FIX 1 and 2 on the review's own ± counterexamples
+/// (`review017/data/review_cases.bed`, lines 1-2 and 5-6), under the release
+/// options: a transcript with no coding base inside its exons, or with fewer
+/// than three of them, is written as non-coding - gene / transcript / exon rows
+/// only, no CDS, codon or UTR rows.
+///
+/// Derivation (0-based, half-open; the CDS is the exon ∩ [thickStart, thickEnd)
+/// intersection):
+///
+/// * utrP / utrM (chrU 100-300, thick [180,220)): exons [100,120) and [250,270)
+///   on +, [130,150) and [280,300) on -, so [180,220) is wholly intronic on
+///   both strands and every coding piece is empty (0 coding bases). MUST-FIX 1
+///   emitted one `five_prime_utr` and one `three_prime_utr` row per exon here.
+/// * shortP / shortM (chrC 100-200, 2 bp CDS): one exon [130,132) on +, [168,170)
+///   on -, i.e. 2 coding bases - fewer than the three a codon needs. MUST-FIX 2
+///   emitted a 2 bp `start_codon` and a 2 bp `stop_codon` row here.
+///
+/// Three coding bases are a complete codon and are still written, and
+/// `GxfOptions::default()` (no release option) keeps 0.0.16's rows for both
+/// inputs, which is what the golden test pins.
+#[test]
+fn test_release_options_write_non_coding_without_exonic_cds_or_full_codon() {
+    let release = GxfOptions {
+        source: Some("aprime"),
+        utr_rows: true,
+        gtf22: true,
+        gff_escape: true,
+        ..Default::default()
+    };
+
+    // review_cases.bed line 1: chrU 100 300 utrP 0 + 180 220 0,0,0 2 20,20 0,150
+    let utr_p = bed12_record(
+        b"chrU",
+        100,
+        300,
+        b"utrP",
+        Strand::Forward,
+        180,
+        220,
+        &[20, 20],
+        &[0, 150],
+    );
+    // line 2, the same thick interval mirrored onto -: 2 20,20 30,180.
+    let utr_m = bed12_record(
+        b"chrU",
+        100,
+        300,
+        b"utrM",
+        Strand::Reverse,
+        180,
+        220,
+        &[20, 20],
+        &[30, 180],
+    );
+    // line 5: chrC 100 200 shortP 0 + 130 132 0,0,0 1 2 30
+    let short_p = bed12_record(
+        b"chrC",
+        100,
+        200,
+        b"shortP",
+        Strand::Forward,
+        130,
+        132,
+        &[2],
+        &[30],
+    );
+    // line 6, the same mirrored onto -: thick 168,170, exon 2 at 68.
+    let short_m = bed12_record(
+        b"chrC",
+        100,
+        200,
+        b"shortM",
+        Strand::Reverse,
+        168,
+        170,
+        &[2],
+        &[68],
+    );
+
+    assert_eq!(
+        as_text(utr_p.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrU\taprime\tgene\t101\t300\t.\t+\t.\tgene_id \"utrP\";",
+            "chrU\taprime\ttranscript\t101\t300\t.\t+\t.\tgene_id \"utrP\"; transcript_id \"utrP\";",
+            "chrU\taprime\texon\t101\t120\t.\t+\t.\tgene_id \"utrP\"; transcript_id \"utrP\"; exon_number \"1\";",
+            "chrU\taprime\texon\t251\t270\t.\t+\t.\tgene_id \"utrP\"; transcript_id \"utrP\"; exon_number \"2\";",
+        ]
+    );
+    assert_eq!(
+        as_text(utr_m.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrU\taprime\tgene\t101\t300\t.\t-\t.\tgene_id \"utrM\";",
+            "chrU\taprime\ttranscript\t101\t300\t.\t-\t.\tgene_id \"utrM\"; transcript_id \"utrM\";",
+            "chrU\taprime\texon\t131\t150\t.\t-\t.\tgene_id \"utrM\"; transcript_id \"utrM\"; exon_number \"2\";",
+            "chrU\taprime\texon\t281\t300\t.\t-\t.\tgene_id \"utrM\"; transcript_id \"utrM\"; exon_number \"1\";",
+        ]
+    );
+    assert_eq!(
+        as_text(short_p.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrC\taprime\tgene\t101\t200\t.\t+\t.\tgene_id \"shortP\";",
+            "chrC\taprime\ttranscript\t101\t200\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\";",
+            "chrC\taprime\texon\t131\t132\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";",
+        ]
+    );
+    assert_eq!(
+        as_text(short_m.to_gxf_with_options::<Gtf>(&release, None)),
+        vec![
+            "chrC\taprime\tgene\t101\t200\t.\t-\t.\tgene_id \"shortM\";",
+            "chrC\taprime\ttranscript\t101\t200\t.\t-\t.\tgene_id \"shortM\"; transcript_id \"shortM\";",
+            "chrC\taprime\texon\t169\t170\t.\t-\t.\tgene_id \"shortM\"; transcript_id \"shortM\"; exon_number \"1\";",
+        ]
+    );
+
+    // The gate belongs to each release option on its own, so a caller setting
+    // only one of them never gets a UTR, CDS or codon row for these records.
+    for options in [
+        release,
+        GxfOptions {
+            utr_rows: true,
+            gtf22: false,
+            ..release
+        },
+        GxfOptions {
+            utr_rows: false,
+            gtf22: true,
+            ..release
+        },
+    ] {
+        for record in [&utr_p, &utr_m, &short_p, &short_m] {
+            for line in as_text(record.to_gxf_with_options::<Gtf>(&options, None)) {
+                let feature = line.split('\t').nth(2).unwrap();
+                assert!(
+                    !matches!(
+                        feature,
+                        "CDS" | "start_codon" | "stop_codon" | "five_prime_utr" | "three_prime_utr"
+                    ),
+                    "non-coding transcript wrote a {feature} row: {line}"
+                );
+            }
+            // GFF3 is gated the same way, only the UTR feature names differ.
+            for line in as_text(record.to_gxf_with_options::<Gff>(&options, None)) {
+                let feature = line.split('\t').nth(2).unwrap();
+                assert!(
+                    !matches!(
+                        feature,
+                        "CDS" | "start_codon" | "stop_codon" | "five_prime_UTR" | "three_prime_UTR"
+                    ),
+                    "non-coding transcript wrote a {feature} row: {line}"
+                );
+            }
+        }
+    }
+
+    // Three coding bases are one complete codon, so they are still written (and
+    // `gtf22` trims all three out of the CDS rows into the codon rows).
+    let three_p = bed12_record(
+        b"chrC",
+        100,
+        200,
+        b"threeP",
+        Strand::Forward,
+        130,
+        133,
+        &[3],
+        &[30],
+    );
+    let three_rows = as_text(three_p.to_gxf_with_options::<Gtf>(&release, None));
+    assert!(three_rows.contains(
+        &"chrC\taprime\tstart_codon\t131\t133\t.\t+\t0\tgene_id \"threeP\"; transcript_id \"threeP\"; exon_number \"1\";".to_string()
+    ));
+    assert!(three_rows.contains(
+        &"chrC\taprime\tstop_codon\t131\t133\t.\t+\t0\tgene_id \"threeP\"; transcript_id \"threeP\"; exon_number \"1\";".to_string()
+    ));
+    assert_eq!(
+        three_rows
+            .iter()
+            .filter(|line| line.split('\t').nth(2) == Some("CDS"))
+            .count(),
+        0,
+        "the 3 bp CDS is trimmed into the codon rows, not dropped as truncated"
+    );
+
+    // Default options are not gated: 0.0.16 keeps the 2 bp CDS row and its
+    // truncated codon rows, which is the golden test's behaviour.
+    let legacy = as_text(short_p.to_gxf_with_options::<Gtf>(&GxfOptions::default(), None));
+    assert!(legacy.contains(
+        &"chrC\tgenepred\tCDS\t131\t132\t.\t+\t0\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";".to_string()
+    ));
+    assert!(legacy.contains(
+        &"chrC\tgenepred\tstart_codon\t131\t132\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";".to_string()
+    ));
+    assert!(legacy.contains(
+        &"chrC\tgenepred\tstop_codon\t131\t132\t.\t+\t.\tgene_id \"shortP\"; transcript_id \"shortP\"; exon_number \"1\";".to_string()
+    ));
+}
+
+/// Builds a `GenePred` from the BED12 fields of one review counterexample line
+/// (0-based, half-open), the way `read_bed12` reads them.
+#[allow(clippy::too_many_arguments)]
+fn bed12_record(
+    chrom: &[u8],
+    start: u64,
+    end: u64,
+    name: &[u8],
+    strand: Strand,
+    thick_start: u64,
+    thick_end: u64,
+    sizes: &[u32],
+    starts: &[u32],
+) -> GenePred {
+    Bed12 {
+        chrom: chrom.to_vec(),
+        start,
+        end,
+        name: name.to_vec(),
+        score: 0,
+        strand,
+        thick_start,
+        thick_end,
+        item_rgb: genepred::bed::Rgb(0, 0, 0),
+        block_count: sizes.len() as u32,
+        block_sizes: sizes.to_vec(),
+        block_starts: starts.to_vec(),
+        extras: Extras::new(),
+    }
+    .into()
+}
+
+/// SO percent-encoding of a seqid and its IDs (`tests/data/bed12_special_seqid.bed`,
+/// whose seqid and transcript name are `c;1=a,b&%x#y`), GFF3 only.
+///
+/// The two rules differ by design (release_design.md sec.3): the seqid escapes
+/// every byte outside `[a-zA-Z0-9.:^*$@!+_?-|]`, while a column-9 value only
+/// escapes `%`, `;`, `=`, `&`, `,` and the control bytes. The only byte of this
+/// name the rules disagree on is `#`, which is fine inside column 9 - only a
+/// `#` starting a line (or column 1) opens a GFF3 comment - so it stays literal
+/// in the ID and GTF writes the name verbatim throughout.
+#[test]
+fn test_gff_escape_seqid_and_id() {
+    let records = read_bed12("tests/data/bed12_special_seqid.bed", 0);
+    assert_eq!(records.len(), 1, "special seqid: one record");
+    let opts = GxfOptions {
+        gff_escape: true,
+        ..Default::default()
+    };
+
+    let gff = as_text(records[0].to_gxf_with_options::<Gff>(&opts, None));
+    let seqid = "c%3B1%3Da%2Cb%26%25x%23y";
+    assert_eq!(
+        gff[0],
+        format!("{seqid}\tgenepred\tgene\t11\t210\t.\t+\t.\tID=gene-c%3B1%3Da%2Cb%26%25x#y;")
+    );
+    assert_eq!(
+        gff[1],
+        format!("{seqid}\tgenepred\tmRNA\t11\t210\t.\t+\t.\tID=c%3B1%3Da%2Cb%26%25x#y;Parent=gene-c%3B1%3Da%2Cb%26%25x#y;")
+    );
+    assert!(
+        gff.iter()
+            .all(|line| line.starts_with(&format!("{seqid}\t"))),
+        "every row carries the escaped seqid"
+    );
+
+    let gtf = as_text(records[0].to_gxf_with_options::<Gtf>(&opts, None));
+    assert!(
+        gtf.iter().all(|line| line.starts_with("c;1=a,b&%x#y\t")),
+        "GTF has no escaping, even with gff_escape set"
+    );
+}
+
+/// STEP 1 of M1 ("Default byte identity"): every GXF path the release design
+/// lists, replayed over every golden input with `GxfOptions::default()`, must
+/// rebuild `tests/data/golden_0_0_16.{gtf,gff}` — the frozen output of the
+/// published `genepred = "=0.0.16"` (registry checksum recorded in the golden
+/// commit's message) — byte for byte. Any of the four new options that moves a
+/// default byte fails here.
+#[test]
+fn test_gxf_options_default_rebuilds_golden_0_0_16_bytes() {
+    let (gtf, gff) = replay_golden_sequence();
+
+    let expected_gtf: &[u8] = include_bytes!("data/golden_0_0_16.gtf");
+    let expected_gff: &[u8] = include_bytes!("data/golden_0_0_16.gff");
+    assert_eq!(gtf.as_slice(), expected_gtf, "GTF golden mismatch");
+    assert_eq!(gff.as_slice(), expected_gff, "GFF golden mismatch");
+}
+
+/// Golden inputs, in the contract's fixed order, with the number of trailing BED
+/// extras read into each record (extra keys `13`, `14`, ...).
+const GOLDEN_INPUTS: &[(&str, usize)] = &[
+    ("bed12.bed", 0),
+    ("bed12_extra.bed", 2),
+    ("bed12_mirror.bed", 1),
+    ("bed12_split_stop.bed", 0),
+    ("bed12_special_seqid.bed", 0),
+];
+
+/// Number of GXF paths replayed per record per map variant: `to_gxf`,
+/// `to_gxf_with_additional_fields` with 0 and with 1, the four
+/// `to_gxf_with_options` combinations, and `to_gxf_gene_line`.
+const GOLDEN_PATHS: usize = 8;
+
+/// Rebuilds the frozen golden sequence: for each input, for each GXF path, with
+/// and then without the transcript -> gene map, plus the `Writer` path over the
+/// whole input.
+fn replay_golden_sequence() -> (Vec<u8>, Vec<u8>) {
+    let mut gtf = Vec::new();
+    let mut gff = Vec::new();
+
+    for (name, additional_fields) in GOLDEN_INPUTS {
+        let records = read_bed12(&format!("tests/data/{name}"), *additional_fields);
+        assert!(!records.is_empty(), "golden input has no records: {name}");
+        let map = golden_gene_map(&records);
+        let matrix = [
+            GeneLine::Include,
+            GeneLine::Include,
+            GeneLine::Omit,
+            GeneLine::Omit,
+        ]
+        .into_iter()
+        .zip([
+            TranscriptParent::Include,
+            TranscriptParent::Omit,
+            TranscriptParent::Include,
+            TranscriptParent::Omit,
+        ])
+        .map(|(gene_line, transcript_parent)| GxfOptions {
+            gene_line,
+            transcript_parent,
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+
+        for with_map in [true, false] {
+            let map = with_map.then_some(&map);
+            for record in &records {
+                for path in 0..GOLDEN_PATHS {
+                    replay_golden_path::<Gtf>(record, path, &matrix, map, &mut gtf);
+                    replay_golden_path::<Gff>(record, path, &matrix, map, &mut gff);
+                }
+            }
+
+            let mut buffer = Vec::new();
+            Writer::<Gtf>::from_records_with_options(
+                &records,
+                &mut buffer,
+                &WriterOptions::default(),
+            )
+            .unwrap();
+            gtf.extend_from_slice(&buffer);
+            let mut buffer = Vec::new();
+            Writer::<Gff>::from_records_with_options(
+                &records,
+                &mut buffer,
+                &WriterOptions::default(),
+            )
+            .unwrap();
+            gff.extend_from_slice(&buffer);
+        }
+    }
+
+    (gtf, gff)
+}
+
+/// The transcript -> gene map the golden files were written with: each record's
+/// name maps to `gene_<name>`, derived only from the input so both the writer
+/// and this replay build the same map.
+fn golden_gene_map(records: &[GenePred]) -> HashMap<String, String> {
+    records
+        .iter()
+        .filter_map(|record| {
+            let name = record
+                .name()
+                .map(|name| String::from_utf8_lossy(name).into_owned())?;
+            Some((name.clone(), format!("gene_{name}")))
+        })
+        .collect()
+}
+
+/// Whether a record carries at least one numeric extra, i.e. whether
+/// `to_gxf_with_additional_fields(1, _)` applies to it.
+fn has_numeric_extra(record: &GenePred) -> bool {
+    record
+        .extras()
+        .keys()
+        .any(|key| std::str::from_utf8(key).is_ok_and(|key| key.parse::<u64>().is_ok()))
+}
+
+/// Appends one GXF path's rows to `out`.
+fn replay_golden_path<K>(
+    record: &GenePred,
+    path: usize,
+    matrix: &[GxfOptions],
+    map: Option<&HashMap<String, String>>,
+    out: &mut Vec<u8>,
+) where
+    K: BedFormat,
+{
+    let lines = match path {
+        0 => record.to_gxf::<K>(map),
+        1 => record.to_gxf_with_additional_fields::<K>(0, map),
+        2 => {
+            if has_numeric_extra(record) {
+                record.to_gxf_with_additional_fields::<K>(1, map)
+            } else {
+                return;
+            }
+        }
+        3..=6 => record.to_gxf_with_options::<K>(&matrix[path - 3], map),
+        7 => vec![record.to_gxf_gene_line::<K>(0, map)],
+        _ => unreachable!("golden GXF path"),
+    };
+    for line in lines {
+        out.extend_from_slice(&line);
+        out.push(b'\n');
+    }
+}
+
+/// Reads a BED12 file with `additional_fields` trailing extras.
+fn read_bed12(path: &str, additional_fields: usize) -> Vec<GenePred> {
+    let options = ReaderOptions::new().additional_fields(additional_fields);
+    let mut reader = Reader::<Bed12>::from_path_with_custom_fields(path, options)
+        .unwrap_or_else(|error| panic!("reading {path}: {error}"));
+    reader
+        .records()
+        .map(|record| record.unwrap_or_else(|error| panic!("record in {path}: {error}")))
+        .collect()
 }

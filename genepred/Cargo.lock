@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "genepred"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "bzip2",
  "clap",

@@ -1,0 +1,6 @@
+# seqid (and transcript name) c;1=a,b&%x#y: every byte passes BED's name rule, so
+# only GFF3 escaping applies - seqid -> c%3B1%3Da%2Cb%26%25x%23y, column-9 values
+# -> c%3B1%3Da%2Cb%26%25x#y (# is delimited only in column 1, so it stays literal).
+# Two exons, CDS [40,160) in pieces of 31 + 50 bp (81 bp, 27 codons), so the 3'UTR
+# piece [160,210) and the 5'UTR piece [10,40) both exist.
+c;1=a,b&%x#y	10	210	c;1=a,b&%x#y	0	+	40	160	0,0,0	2	61,50	0,100
